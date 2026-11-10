@@ -16,6 +16,9 @@ load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 FIREBASE_URL = "https://ssrpbot-2ac7b-default-rtdb.firebaseio.com" 
 
+# ВСТАВЬ СЮДА ID КАНАЛА, ГДЕ БУДЕТ КНОПКА
+VERIFY_CHANNEL_ID = 0 
+
 KAP_GUILD_ID = 1294612883304353812
 MAIN_GUILD_ID = 1292881174443720767
 KAP_FORUM_ID = 1566139891258097664
@@ -44,21 +47,81 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
+# =====================================================================
+# КНОПКИ ДЛЯ ВЕРИФИКАЦИИ
+# =====================================================================
+class VerifyCheckView(discord.ui.View):
+    def __init__(self, code):
+        super().__init__(timeout=None)
+        self.code = code
+
+    @discord.ui.button(label="Проверить", style=discord.ButtonStyle.primary, custom_id="btn_check_after_code")
+    async def check_after(self, interaction: discord.Interaction, button: discord.ui.Button):
+        roblox_id = db.check_link(interaction.user.id)
+        if roblox_id:
+            await interaction.response.send_message(f"✅ **Успех!** Аккаунт привязан (Roblox ID: `{roblox_id}`).", ephemeral=True)
+            button.disabled = True
+            await interaction.message.edit(view=self)
+        else:
+            await interaction.response.send_message("⏳ Бот еще не получил данные от плейса. Убедитесь, что вы ввели код в игре, и подождите 10 секунд.", ephemeral=True)
+
+class VerifyStartView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Пройти верификацию", style=discord.ButtonStyle.success, custom_id="btn_start_verify")
+    async def start_verify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Проверяем, не привязан ли уже
+        if db.check_link(interaction.user.id):
+            return await interaction.response.send_message("❌ Вы уже верифицированы!", ephemeral=True)
+
+        # Генерируем код
+        code = f"SSRP-{random.randint(10000, 99999)}"
+        await push_code_to_firebase(code, interaction.user.id)
+        
+        embed = discord.Embed(
+            title="Инструкция по верификации",
+            description=f"1. Ваш код: **`{code}`**\n"
+                        f"2. Зайдите в плейс верификации: [ССЫЛКА НА ПЛЕЙС](https://www.roblox.com/games/0000000000/)\n"
+                        f"3. Введите код в игре.\n"
+                        f"4. Нажмите кнопку **«Проверить»** ниже.\n\n"
+                        f"*Код действует 10 минут.*",
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed, view=VerifyCheckView(code), ephemeral=True)
+
+# =====================================================================
+# БОТ
+# =====================================================================
 class MyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
         db.init_db()
-        # Просто синхронизируем. Без очистки.
-        self.tree.copy_global_to(guild=KAP_OBJ)
-        await self.tree.sync(guild=KAP_OBJ)
-        self.tree.copy_global_to(guild=MAIN_OBJ)
-        await self.tree.sync(guild=MAIN_OBJ)
-        print("[+] Команды синхронизированы (безопасный режим).")
+        self.add_view(VerifyStartView()) 
+        self.add_view(VerifyCheckView("")) 
 
     async def on_ready(self):
         print(f'[+] Бот запущен как {self.user}')
+
+        # Отправляем панель в канал (если ее там нет)
+        if VERIFY_CHANNEL_ID != 0:
+            channel = self.get_channel(VERIFY_CHANNEL_ID)
+            if channel:
+                # Проверяем, есть ли уже сообщение с кнопкой
+                async for msg in channel.history(limit=10):
+                    if msg.author == self.user and msg.components:
+                        break
+                else:
+                    embed = discord.Embed(
+                        title="Верификация аккаунта",
+                        description="Нажмите на кнопку ниже, чтобы привязать аккаунт Roblox к вашему Discord.",
+                        color=discord.Color.blue()
+                    )
+                    await channel.send(embed=embed, view=VerifyStartView())
+                    print("[+] Панель верификации отправлена в канал.")
+
         if not firebase_verification_loop.is_running():
             firebase_verification_loop.start()
         if not monitor_chsp.is_running():
@@ -88,46 +151,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.response.send_message(embed=discord.Embed(description="## ❌ У вас нет прав.", color=discord.Color(16711680)), ephemeral=True)
 
 # =====================================================================
-# ВСПОМОГАТЕЛЬНЫЕ
-# =====================================================================
-def extract_group_id(link: str):
-    link = link.strip()
-    if link.isdigit(): return int(link)
-    match = re.search(r'(?:groups|communities)/(\d+)', link)
-    if match: return int(match.group(1))
-    return None
-
-async def get_user_roblox_groups(roblox_id):
-    url = f"https://groups.roblox.com/v1/users/{roblox_id}/groups/roles"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    for attempt in range(2):
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return [group["group"]["id"] for group in data.get("data", [])]
-                    elif resp.status == 429:
-                        await asyncio.sleep(60)
-                        continue
-                    else: return []
-        except Exception: await asyncio.sleep(2)
-    return []
-
-async def get_group_info(group_id):
-    url = f"https://groups.roblox.com/v1/groups/{group_id}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("name", "Неизвестная группа")
-    except: pass
-    return "Неизвестная группа"
-
-# =====================================================================
-# ВЕРИФИКАЦИЯ
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # =====================================================================
 async def push_code_to_firebase(code, discord_id):
     url = f"{FIREBASE_URL}/codes/{code}.json"
@@ -164,15 +188,41 @@ async def check_firebase_codes():
 @tasks.loop(seconds=10)
 async def firebase_verification_loop(): await check_firebase_codes()
 
-@bot.tree.command(name="верификация", description="Привязать аккаунт Roblox", guild=MAIN_OBJ)
-async def verify_user(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    if db.check_link(interaction.user.id):
-        return await interaction.followup.send("❌ Вы уже верифицированы!", ephemeral=True)
-    code = f"SSRP-{random.randint(10000, 99999)}"
-    await push_code_to_firebase(code, interaction.user.id)
-    embed = discord.Embed(title="Верификация", description=f"Ваш код: **`{code}`**\n\n1. Зайдите в плейс.\n2. Введите код.\n\n*Код действует 10 минут.*", color=discord.Color.blue())
-    await interaction.followup.send(embed=embed, ephemeral=True)
+def extract_group_id(link: str):
+    link = link.strip()
+    if link.isdigit(): return int(link)
+    match = re.search(r'(?:groups|communities)/(\d+)', link)
+    if match: return int(match.group(1))
+    return None
+
+async def get_user_roblox_groups(roblox_id):
+    url = f"https://groups.roblox.com/v1/users/{roblox_id}/groups/roles"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    for attempt in range(2):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return [group["group"]["id"] for group in data.get("data", [])]
+                    elif resp.status == 429:
+                        await asyncio.sleep(60)
+                        continue
+                    else: return []
+        except Exception: await asyncio.sleep(2)
+    return []
+
+async def get_group_info(group_id):
+    url = f"https://groups.roblox.com/v1/groups/{group_id}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("name", "Неизвестная группа")
+    except: pass
+    return "Неизвестная группа"
 
 # =====================================================================
 # ЛОГИКА ЧСП
@@ -320,7 +370,7 @@ class CheckGroupView(discord.ui.View):
             await interaction.message.edit(view=self)
 
 # =====================================================================
-# КОМАНДЫ
+# КОМАНДЫ АДМИНИСТРАЦИИ
 # =====================================================================
 @bot.tree.command(name="debug_chsp", description="[АДМИН] Отладка ЧСП", guild=KAP_OBJ)
 @app_commands.describe(user="Пользователь", link="Ссылка на группу")
