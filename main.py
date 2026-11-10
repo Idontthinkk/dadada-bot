@@ -16,8 +16,8 @@ load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 FIREBASE_URL = "https://ssrpbot-2ac7b-default-rtdb.firebaseio.com" 
 
-# ВСТАВЬ СЮДА ID КАНАЛА, ГДЕ БУДЕТ ПАНЕЛЬ
-VERIFY_CHANNEL_ID = 1569796058413015090
+# ID канала для панели
+VERIFY_CHANNEL_ID = 1569796058413015090 
 
 KAP_GUILD_ID = 1294612883304353812
 MAIN_GUILD_ID = 1292881174443720767
@@ -31,7 +31,12 @@ MAIN_OBJ = discord.Object(id=MAIN_GUILD_ID)
 CREATOR_ID = 939996361712074832
 OCHS_ROLE_1 = 1360357746972819476
 OCHS_ROLE_2 = 1358192820900466932
-VERIFY_ROLE_ID = 1511001116559802368
+
+# НОВЫЙ ID РОЛИ ВЕРИФИКАЦИИ
+VERIFY_ROLE_ID = 1569799728210772059 
+
+# ССЫЛКА НА ПЛЕЙС
+ROBLOX_PLACE_LINK = "https://www.roblox.com/games/86704551294131/1979"
 
 GUILDS = {
     1252308402722574416: "Аэрофлот", 1294972362197958656: "Пожарка",
@@ -48,7 +53,7 @@ intents.members = True
 intents.message_content = True
 
 # =====================================================================
-# КНОПКИ (GUI)
+# КНОПКИ И GUI
 # =====================================================================
 class VerifyCheckView(discord.ui.View):
     def __init__(self, code):
@@ -59,7 +64,7 @@ class VerifyCheckView(discord.ui.View):
     async def check_after(self, interaction: discord.Interaction, button: discord.ui.Button):
         roblox_id = db.check_link(interaction.user.id)
         if roblox_id:
-            await interaction.response.send_message(f"✅ **Успех!** Аккаунт привязан (Roblox ID: `{roblox_id}`).", ephemeral=True)
+            await interaction.response.send_message(f"✅ **Успех!** Аккаунт привязан (Roblox ID: `{roblox_id}`).\nПриятной игры на проекте!", ephemeral=True)
             button.disabled = True
             await interaction.message.edit(view=self)
         else:
@@ -71,7 +76,16 @@ class VerifyStartView(discord.ui.View):
 
     @discord.ui.button(label="Пройти верификацию", style=discord.ButtonStyle.success, custom_id="btn_start_verify")
     async def start_verify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Проверяем, не привязан ли уже
         if db.check_link(interaction.user.id):
+            # Если привязан, но нет роли - выдаем роль
+            guild = bot.get_guild(MAIN_GUILD_ID)
+            member = guild.get_member(interaction.user.id)
+            if member:
+                role = guild.get_role(VERIFY_ROLE_ID)
+                if role:
+                    await member.add_roles(role)
+                    return await interaction.response.send_message("✅ Вы уже верифицированы! Роль успешно выдана.", ephemeral=True)
             return await interaction.response.send_message("❌ Вы уже верифицированы!", ephemeral=True)
 
         code = f"SSRP-{random.randint(10000, 99999)}"
@@ -80,10 +94,10 @@ class VerifyStartView(discord.ui.View):
         embed = discord.Embed(
             title="Инструкция по верификации",
             description=f"1. Ваш код: **`{code}`**\n"
-                        f"2. Зайдите в плейс верификации.\n"
+                        f"2. Зайдите в плейс верификации: [ССЫЛКА НА ПЛЕЙС]({ROBLOX_PLACE_LINK})\n"
                         f"3. Введите код в игре.\n"
                         f"4. Нажмите кнопку **«Проверить»** ниже.\n\n"
-                        f"*Код действует 10 минут.*",
+                        f"*Код действует 10 минут. Верификация безопасна — мы не запрашиваем пароль.*",
             color=discord.Color.blue()
         )
         await interaction.response.send_message(embed=embed, view=VerifyCheckView(code), ephemeral=True)
@@ -107,20 +121,26 @@ class MyBot(commands.Bot):
     async def on_ready(self):
         print(f'[+] Бот запущен как {self.user}')
 
-        # Автоматическая отправка панели
+        # УМНАЯ ОТПРАВКА ПАНЕЛИ (без дублей)
         if VERIFY_CHANNEL_ID != 0:
             channel = self.get_channel(VERIFY_CHANNEL_ID)
             if channel:
-                async for msg in channel.history(limit=5):
-                    if msg.author == self.user and msg.components:
+                found_panel = False
+                async for msg in channel.history(limit=20):
+                    if msg.author == self.user and msg.embeds and msg.components:
+                        found_panel = True
                         break
-                else:
+                
+                if not found_panel:
                     embed = discord.Embed(
                         title="Верификация аккаунта",
-                        description="Нажмите на кнопку ниже, чтобы привязать аккаунт Roblox к вашему Discord.",
+                        description="Нажмите на кнопку ниже, чтобы привязать аккаунт Roblox к вашему Discord.\n\n*Безопасно: мы не запрашиваем данные вашего аккаунта, вы просто зайдете в плейс.*",
                         color=discord.Color.blue()
                     )
                     await channel.send(embed=embed, view=VerifyStartView())
+                    print("[DEBUG] Панель отправлена в канал.")
+                else:
+                    print("[DEBUG] Панель уже есть в канале, дубль не создан.")
 
         if not firebase_verification_loop.is_running(): firebase_verification_loop.start()
         if not monitor_chsp.is_running(): monitor_chsp.start()
@@ -148,7 +168,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.response.send_message(embed=discord.Embed(description="## ❌ У вас нет прав.", color=discord.Color(16711680)), ephemeral=True)
 
 # =====================================================================
-# ВСПОМОГАТЕЛЬНЫЕ
+# ВЕРИФИКАЦИЯ
 # =====================================================================
 async def push_code_to_firebase(code, discord_id):
     url = f"{FIREBASE_URL}/codes/{code}.json"
@@ -170,21 +190,39 @@ async def check_firebase_codes():
                             discord_id = info.get("discord_id")
                             roblox_id = info.get("roblox_id")
                             db.link_user(discord_id, roblox_id)
+                            
                             guild = bot.get_guild(MAIN_GUILD_ID)
                             member = guild.get_member(discord_id)
                             if member:
                                 role = guild.get_role(VERIFY_ROLE_ID)
                                 if role: await member.add_roles(role)
-                            try:
-                                user = await bot.fetch_user(discord_id)
-                                await user.send("✅ **Успешная верификация!**")
-                            except: pass
+                                
+                                # КРАСИВОЕ ЛС
+                                try:
+                                    embed = discord.Embed(
+                                        title="✅ Успешная верификация!",
+                                        description="Ваш аккаунт Discord успешно привязан к Roblox.\n"
+                                                    "Теперь вам доступны все серверы проекта ССРП.\n\n"
+                                                    "**Если это не ваш аккаунт**, немедленно напишите в техническую поддержку проекта.\n\n"
+                                                    "*Приятной игры на проекте!*",
+                                        color=discord.Color.green()
+                                    )
+                                    embed.add_field(name="Ваш Discord", value=member.mention, inline=True)
+                                    embed.add_field(name="Ваш Roblox", value=f"[Профиль](https://www.roblox.com/users/{roblox_id}/profile)\nID: `{roblox_id}`", inline=True)
+                                    embed.set_thumbnail(url="https://media.discordapp.net/attachments/1511004157535060058/1565492447872557128/image.png")
+                                    
+                                    await member.send(embed=embed)
+                                except: pass
+
                             await session.delete(f"{FIREBASE_URL}/codes/{code}.json")
     except Exception: pass
 
 @tasks.loop(seconds=10)
 async def firebase_verification_loop(): await check_firebase_codes()
 
+# =====================================================================
+# ОСТАЛЬНЫЕ ФУНКЦИИ (ЧСП, ОЧС, РОЛИ)
+# =====================================================================
 def extract_group_id(link: str):
     link = link.strip()
     if link.isdigit(): return int(link)
@@ -221,9 +259,6 @@ async def get_group_info(group_id):
     except: pass
     return "Неизвестная группа"
 
-# =====================================================================
-# ЛОГИКА ЧСП
-# =====================================================================
 async def perform_global_chsp_check():
     chsp_groups = db.get_all_chsp_groups()
     if not chsp_groups: return "Групп в ЧСП нет."
@@ -303,9 +338,6 @@ async def check_deadlines_loop():
             db.remove_pending_chsp(d_id, g_id)
         except: pass
 
-# =====================================================================
-# ОЧС И КНОПКИ
-# =====================================================================
 async def perform_ochs(user: discord.User, reason: str, roblox_nick: str, proof: str, moderator_name: str):
     now = datetime.datetime.now()
     time_str = now.strftime("%d.%m.%Y в %H:%M")
@@ -366,9 +398,6 @@ class CheckGroupView(discord.ui.View):
             button.disabled = True
             await interaction.message.edit(view=self)
 
-# =====================================================================
-# КОМАНДЫ АДМИНИСТРАЦИИ
-# =====================================================================
 @bot.tree.command(name="debug_chsp", description="[АДМИН] Отладка ЧСП", guild=KAP_OBJ)
 @app_commands.describe(user="Пользователь", link="Ссылка на группу")
 @is_creator()
