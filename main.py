@@ -115,10 +115,10 @@ class MyBot(commands.Bot):
         db.init_db()
         self.add_view(VerifyStartView()) 
         self.add_view(VerifyCheckView("")) 
-        self.tree.copy_global_to(guild=KAP_OBJ)
-        await self.tree.sync(guild=KAP_OBJ)
-        self.tree.copy_global_to(guild=MAIN_OBJ)
-        await self.tree.sync(guild=MAIN_OBJ)
+        
+        # ГЛОБАЛЬНАЯ СИНХРОНИЗАЦИЯ (для всех серверов)
+        await self.tree.sync()
+        print("[+] Команды синхронизированы глобально.")
 
     async def on_ready(self):
         print(f'[+] Бот запущен как {self.user}')
@@ -177,7 +177,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.response.send_message(embed=discord.Embed(description="## ❌ У вас нет прав.", color=discord.Color(16711680)), ephemeral=True)
 
 # =====================================================================
-# НОВАЯ ФУНКЦИЯ: ПОЛУЧЕНИЕ ВСЕХ УЧАСТНИКОВ ГРУППЫ
+# ФУНКЦИИ ДЛЯ РОБЛОКСА
 # =====================================================================
 async def get_all_group_members(group_id):
     members = set()
@@ -191,13 +191,11 @@ async def get_all_group_members(group_id):
             
             try:
                 async with session.get(url, headers=headers) as resp:
-                    if resp.status == 403:
-                        return None # Группа закрыта
+                    if resp.status == 403: return None
                     if resp.status == 429:
                         await asyncio.sleep(5)
                         continue
-                    if resp.status != 200:
-                        break
+                    if resp.status != 200: break
                     
                     data = await resp.json()
                     for user in data.get("data", []):
@@ -211,9 +209,6 @@ async def get_all_group_members(group_id):
                 break
     return members
 
-# =====================================================================
-# ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ПОЛНОГО НИКА ИЗ РОБЛОКСА
-# =====================================================================
 async def get_roblox_display_name(roblox_id):
     url = f"https://users.roblox.com/v1/users/{roblox_id}"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -226,8 +221,44 @@ async def get_roblox_display_name(roblox_id):
     except: pass
     return None
 
+async def get_user_roblox_groups(roblox_id):
+    url = f"https://groups.roblox.com/v1/users/{roblox_id}/groups/roles"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    for attempt in range(2):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return [group["group"]["id"] for group in data.get("data", [])]
+                    elif resp.status == 429:
+                        await asyncio.sleep(60)
+                        continue
+                    else: return []
+        except Exception: await asyncio.sleep(2)
+    return []
+
+async def get_group_info(group_id):
+    url = f"https://groups.roblox.com/v1/groups/{group_id}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("name", "Неизвестная группа")
+    except: pass
+    return "Неизвестная группа"
+
+def extract_group_id(link: str):
+    link = link.strip()
+    if link.isdigit(): return int(link)
+    match = re.search(r'(?:groups|communities)/(\d+)', link)
+    if match: return int(match.group(1))
+    return None
+
 # =====================================================================
-# ВЕРИФИКАЦИЯ (С АВАТАРКОЙ И ПРАВИЛЬНЫМ НИКОМ)
+# ВЕРИФИКАЦИЯ
 # =====================================================================
 async def push_code_to_firebase(code, discord_id):
     url = f"{FIREBASE_URL}/codes/{code}.json"
@@ -292,18 +323,23 @@ async def check_firebase_codes():
 async def firebase_verification_loop(): await check_firebase_codes()
 
 # =====================================================================
-# КОМАНДА ДЛЯ ОБНОВЛЕНИЯ ВСЕХ НИКОВ
+# КОМАНДЫ
 # =====================================================================
-@bot.tree.command(name="обновитьник", description="[АДМИН] Обновить ники всем верифицированным", guild=KAP_OBJ)
+
+# --- АДМИНСКИЕ КОМАНДЫ ---
+@bot.tree.command(name="обновитьник", description="[АДМИН] Обновить ники всем верифицированным")
 @is_creator()
 async def update_all_nicks(interaction: discord.Interaction):
     await interaction.response.send_message("⏳ Начинаю обновление ников для всех верифицированных...")
     
-    conn = sqlite3.connect(db.DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT discord_id, roblox_id FROM links")
-    linked_users = c.fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect(db.DB_NAME)
+        c = conn.cursor()
+        c.execute("SELECT discord_id, roblox_id FROM links")
+        linked_users = c.fetchall()
+        conn.close()
+    except Exception as e:
+        return await interaction.followup.send(f"❌ Ошибка БД: {e}")
 
     guild = bot.get_guild(MAIN_GUILD_ID)
     if not guild:
@@ -338,24 +374,26 @@ async def update_all_nicks(interaction: discord.Interaction):
 
     await interaction.followup.send(f"✅ Готово!\nОбновлено: **{updated_count}**\nОшибка API: **{error_count}**\nНет прав: **{no_rights}**")
 
-# =====================================================================
-# НОВАЯ КОМАНДА: СПИСОК ВСЕХ ЗАРЕГИСТРИРОВАННЫХ
-# =====================================================================
-@bot.tree.command(name="список_зареганных", description="[АДМИН] Показать всех верифицированных игроков", guild=KAP_OBJ)
+@bot.tree.command(name="список_зареганных", description="[АДМИН] Показать всех верифицированных игроков")
 @is_creator()
 async def list_registered(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     
-    conn = sqlite3.connect(db.DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT discord_id, roblox_id FROM links")
-    linked_users = c.fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect(db.DB_NAME)
+        c = conn.cursor()
+        c.execute("SELECT discord_id, roblox_id FROM links")
+        linked_users = c.fetchall()
+        conn.close()
+    except Exception as e:
+        return await interaction.followup.send(f"❌ Ошибка БД: {e}")
 
     if not linked_users:
-        return await interaction.followup.send("📭 В базе пока нет ни одного верифицированного игрока.")
+        return await interaction.followup.send("📭 В базе пока нет ни одного верифицированного игрока (список пуст).")
 
     guild = bot.get_guild(MAIN_GUILD_ID)
+    if not guild:
+        return await interaction.followup.send("❌ Бот не видит Основной сервер (проверьте ID).")
     
     chunks = [linked_users[i:i + 15] for i in range(0, len(linked_users), 15)]
     
@@ -375,10 +413,7 @@ async def list_registered(interaction: discord.Interaction):
         embed.set_footer(text=f"Всего в базе: {len(linked_users)}")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-# =====================================================================
-# ОБНОВЛЕННАЯ КОМАНДА /debug_chsp (ЧЕРЕЗ СПИСОК УЧАСТНИКОВ)
-# =====================================================================
-@bot.tree.command(name="debug_chsp", description="[АДМИН] Показать, кто из верифицированных состоит в группе", guild=KAP_OBJ)
+@bot.tree.command(name="debug_chsp", description="[АДМИН] Показать, кто из верифицированных состоит в группе")
 @app_commands.describe(link="Ссылка на группу Roblox или её ID")
 @is_creator()
 async def debug_chsp(interaction: discord.Interaction, link: str):
@@ -389,17 +424,19 @@ async def debug_chsp(interaction: discord.Interaction, link: str):
         return await interaction.followup.send("❌ Неверный формат ссылки или ID.", ephemeral=True)
         
     group_name = await get_group_info(group_id)
-    
     group_members = await get_all_group_members(group_id)
     
     if group_members is None:
-        return await interaction.followup.send(f"❌ Группа **{group_name}** закрыта. Список участников скрыт настройками приватности Roblox.")
+        return await interaction.followup.send(f"❌ Группа **{group_name}** закрыта. Список участников скрыт.")
         
-    conn = sqlite3.connect(db.DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT discord_id, roblox_id FROM links")
-    linked_users = c.fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect(db.DB_NAME)
+        c = conn.cursor()
+        c.execute("SELECT discord_id, roblox_id FROM links")
+        linked_users = c.fetchall()
+        conn.close()
+    except Exception as e:
+        return await interaction.followup.send(f"❌ Ошибка БД: {e}")
 
     matches = []
     for discord_id, roblox_id in linked_users:
@@ -422,45 +459,106 @@ async def debug_chsp(interaction: discord.Interaction, link: str):
     embed.set_footer(text=f"Всего в базе: {len(linked_users)} | Всего в группе: {len(group_members)}")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-# =====================================================================
-# ОСТАЛЬНОЙ КОД (ЧСП, ОЧС, РОЛИ) БЕЗ ИЗМЕНЕНИЙ
-# =====================================================================
-def extract_group_id(link: str):
-    link = link.strip()
-    if link.isdigit(): return int(link)
-    match = re.search(r'(?:groups|communities)/(\d+)', link)
-    if match: return int(match.group(1))
-    return None
+# --- ЧСП ---
+@bot.tree.command(name="чсп", description="Добавить группу в ЧСП")
+@app_commands.describe(link="Ссылка", reason="Причина")
+@is_creator()
+async def add_chsp(interaction: discord.Interaction, link: str, reason: str):
+    group_id = extract_group_id(link)
+    if not group_id: return await interaction.response.send_message("❌ Неверный формат.", ephemeral=True)
+    group_name = await get_group_info(group_id)
+    if group_name == "Неизвестная группа": return await interaction.response.send_message("❌ Группа не найдена.", ephemeral=True)
+    await interaction.response.send_message(f"⏳ **Принято.** Запускаю проверку.")
+    db.add_chsp_group(group_id, group_name, link, reason, interaction.user.name)
+    forum_channel = bot.get_channel(CHSP_FORUM_ID)
+    if isinstance(forum_channel, discord.ForumChannel):
+        try: await forum_channel.create_thread(name=f"ЧСП | {group_name}", embed=discord.Embed(description=f"# 🚫 ЧСП | {group_name}\n**Ссылка:** [Перейти]({link})\n**Причина:** {reason}\n**Модератор:** {interaction.user.mention}", color=discord.Color(16711680)))
+        except: pass
+    asyncio.create_task(perform_global_chsp_check())
 
-async def get_user_roblox_groups(roblox_id):
-    url = f"https://groups.roblox.com/v1/users/{roblox_id}/groups/roles"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    for attempt in range(2):
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return [group["group"]["id"] for group in data.get("data", [])]
-                    elif resp.status == 429:
-                        await asyncio.sleep(60)
-                        continue
-                    else: return []
-        except Exception: await asyncio.sleep(2)
-    return []
+@bot.tree.command(name="вынести-из-чсп", description="Удалить группу из ЧСП")
+@app_commands.describe(link="Ссылка")
+@is_creator()
+async def remove_chsp(interaction: discord.Interaction, link: str):
+    await interaction.response.send_message("⏳ Удаляю...")
+    group_id = extract_group_id(link)
+    if not group_id: return await interaction.followup.send("❌ Неверный формат.")
+    group_info = db.get_chsp_group_by_id(group_id)
+    if not group_info: return await interaction.followup.send("❌ Этой группы нет в ЧСП.")
+    group_name = group_info[0]
+    db.remove_chsp_group(group_id)
+    await interaction.followup.send(f"✅ Группа **{group_name}** удалена.")
 
-async def get_group_info(group_id):
-    url = f"https://groups.roblox.com/v1/groups/{group_id}"
-    headers = {"User-Agent": "Mozilla/5.0"}
+@bot.tree.command(name="перепроверить_всех_игроков", description="[АДМИН] Проверить всех")
+@is_creator()
+async def force_check(interaction: discord.Interaction):
+    await interaction.response.send_message("⏳ Проверяю...")
+    result = await perform_global_chsp_check()
+    await interaction.followup.send(embed=discord.Embed(description=result, color=discord.Color.blue()))
+
+# --- ОЧС ---
+@bot.tree.command(name="очс", description="Забанить везде")
+@app_commands.describe(user="Пользователь", reason="Причина", roblox_nick="Ник в РБ", proof="Док-во")
+@is_ochs_staff()
+async def ochs(interaction: discord.Interaction, user: discord.User, reason: str, roblox_nick: str = None, proof: str = None):
+    if user.id == interaction.user.id: return await interaction.response.send_message("❌ Нельзя себя!", ephemeral=True)
+    await interaction.response.send_message(f"⏳ Обрабатываю...")
+    if not roblox_nick: roblox_nick = "Не указан"
+    await perform_ochs(user, reason, roblox_nick, proof, interaction.user.mention)
+    await interaction.followup.send(embed=discord.Embed(description=f"# ✅ {user.mention} забанен.", color=discord.Color(16711680)))
+
+@bot.tree.command(name="вынести-из-очс", description="Разбанить")
+@is_ochs_staff()
+async def unban(interaction: discord.Interaction, user: discord.User): await handle_unban(interaction, user)
+
+@bot.tree.command(name="очс-список", description="Показать ЧС")
+@is_ochs_staff()
+async def list_bans(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=False)
+    bans = db.get_all_bans()
+    if not bans: return await interaction.followup.send("📭 Пусто.")
+    for i in range(0, len(bans), 5):
+        desc = "# 📋 ОЧС\n\n"
+        for d_id, d_name, r_nick, reason, mod, date, proof in bans[i:i+5]:
+            desc += f"**👤 {d_name}** (`{d_id}`)\n**R:** {r_nick}\n**Причина:** {reason}\n**Мод:** {mod}\n**Дата:** {date}\n\n"
+        await interaction.followup.send(embed=discord.Embed(description=desc, color=discord.Color(16711680)))
+
+# --- РОЛИ ---
+@bot.tree.command(name="времроль", description="Выдать роль")
+@app_commands.describe(user="Кому", role="Какую", hours="Часов")
+@is_ochs_staff()
+async def temp_role(interaction: discord.Interaction, user: discord.Member, role: discord.Role, hours: float = 1.0):
+    expire = datetime.datetime.now().timestamp() + (hours * 3600)
+    try: await user.add_roles(role)
+    except Exception as e: return await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+    conn = sqlite3.connect(db.DB_NAME)
+    c = conn.cursor()
+    c.execute("INSERT INTO temp_roles (discord_id, role_id, expire_at) VALUES (?, ?, ?)", (user.id, role.id, expire))
+    conn.commit(); conn.close()
+    await interaction.response.send_message(embed=discord.Embed(description=f"## ✅ Роль выдана на {hours} ч.", color=discord.Color(16711680)), ephemeral=True)
+
+@bot.tree.command(name="снятьроль", description="Снять роль")
+@app_commands.describe(user="У кого", role="Какую")
+@is_ochs_staff()
+async def remove_role(interaction: discord.Interaction, user: discord.Member, role: discord.Role):
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("name", "Неизвестная группа")
-    except: pass
-    return "Неизвестная группа"
+        await user.remove_roles(role)
+        await interaction.response.send_message(embed=discord.Embed(description="## ✅ Роль снята.", color=discord.Color(16711680)), ephemeral=True)
+    except Exception as e: await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
 
+# --- ПРОФИЛЬ ---
+@bot.tree.command(name="профиль", description="Ваш профиль")
+async def profile(interaction: discord.Interaction, user: discord.User = None):
+    await interaction.response.defer(ephemeral=True)
+    target = user or interaction.user
+    roblox_id = db.check_link(target.id)
+    if not roblox_id: return await interaction.followup.send(f"❌ {target.mention} не верифицирован. Нажмите кнопку в канале верификации.", ephemeral=True)
+    embed = discord.Embed(description=f"## 👤 {target.mention}\n**Roblox ID:** `{roblox_id}`\n[Профиль](https://www.roblox.com/users/{roblox_id}/profile)", color=discord.Color(16711680))
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+# =====================================================================
+# ЛОГИКА ЧСП И ОЧС
+# =====================================================================
 async def perform_global_chsp_check():
     chsp_groups = db.get_all_chsp_groups()
     if not chsp_groups: return "Групп в ЧСП нет."
@@ -610,164 +708,5 @@ class CheckGroupView(discord.ui.View):
             await interaction.followup.send(f"✅ **Спасибо! Вы вышли из {self.group_name}.**", ephemeral=True)
             button.disabled = True
             await interaction.message.edit(view=self)
-
-@bot.tree.command(name="чсп", description="Добавить группу в ЧСП", guild=KAP_OBJ)
-@app_commands.describe(link="Ссылка", reason="Причина")
-@is_creator()
-async def add_chsp_kap(interaction: discord.Interaction, link: str, reason: str): await process_add_chsp(interaction, link, reason)
-
-@bot.tree.command(name="чсп", description="Добавить группу в ЧСП", guild=MAIN_OBJ)
-@app_commands.describe(link="Ссылка", reason="Причина")
-@is_creator()
-async def add_chsp_main(interaction: discord.Interaction, link: str, reason: str): await process_add_chsp(interaction, link, reason)
-
-async def process_add_chsp(interaction: discord.Interaction, link: str, reason: str):
-    group_id = extract_group_id(link)
-    if not group_id: return await interaction.response.send_message("❌ Неверный формат.", ephemeral=True)
-    group_name = await get_group_info(group_id)
-    if group_name == "Неизвестная группа": return await interaction.response.send_message("❌ Группа не найдена.", ephemeral=True)
-    await interaction.response.send_message(f"⏳ **Принято.** Запускаю проверку.")
-    db.add_chsp_group(group_id, group_name, link, reason, interaction.user.name)
-    forum_channel = bot.get_channel(CHSP_FORUM_ID)
-    if isinstance(forum_channel, discord.ForumChannel):
-        try: await forum_channel.create_thread(name=f"ЧСП | {group_name}", embed=discord.Embed(description=f"# 🚫 ЧСП | {group_name}\n**Ссылка:** [Перейти]({link})\n**Причина:** {reason}\n**Модератор:** {interaction.user.mention}", color=discord.Color(16711680)))
-        except: pass
-    asyncio.create_task(perform_global_chsp_check())
-
-@bot.tree.command(name="вынести-из-чсп", description="Удалить группу из ЧСП", guild=KAP_OBJ)
-@app_commands.describe(link="Ссылка")
-@is_creator()
-async def remove_chsp_kap(interaction: discord.Interaction, link: str): await process_remove_chsp(interaction, link)
-
-@bot.tree.command(name="вынести-из-чсп", description="Удалить группу из ЧСП", guild=MAIN_OBJ)
-@app_commands.describe(link="Ссылка")
-@is_creator()
-async def remove_chsp_main(interaction: discord.Interaction, link: str): await process_remove_chsp(interaction, link)
-
-async def process_remove_chsp(interaction: discord.Interaction, link: str):
-    await interaction.response.send_message("⏳ Удаляю...")
-    group_id = extract_group_id(link)
-    if not group_id: return await interaction.followup.send("❌ Неверный формат.")
-    group_info = db.get_chsp_group_by_id(group_id)
-    if not group_info: return await interaction.followup.send("❌ Этой группы нет в ЧСП.")
-    group_name = group_info[0]
-    db.remove_chsp_group(group_id)
-    await interaction.followup.send(f"✅ Группа **{group_name}** удалена.")
-
-@bot.tree.command(name="перепроверить_всех_игроков", description="[АДМИН] Проверить всех", guild=KAP_OBJ)
-@is_creator()
-async def force_check_kap(interaction: discord.Interaction):
-    await interaction.response.send_message("⏳ Проверяю...")
-    result = await perform_global_chsp_check()
-    await interaction.followup.send(embed=discord.Embed(description=result, color=discord.Color.blue()))
-
-@bot.tree.command(name="перепроверить_всех_игроков", description="[АДМИН] Проверить всех", guild=MAIN_OBJ)
-@is_creator()
-async def force_check_main(interaction: discord.Interaction):
-    await interaction.response.send_message("⏳ Проверяю...")
-    result = await perform_global_chsp_check()
-    await interaction.followup.send(embed=discord.Embed(description=result, color=discord.Color.blue()))
-
-@bot.tree.command(name="очс", description="Забанить везде", guild=KAP_OBJ)
-@app_commands.describe(user="Пользователь", reason="Причина", roblox_nick="Ник в РБ", proof="Док-во")
-@is_ochs_staff()
-async def ochs_kap(interaction: discord.Interaction, user: discord.User, reason: str, roblox_nick: str = None, proof: str = None):
-    if user.id == interaction.user.id: return await interaction.response.send_message("❌ Нельзя себя!", ephemeral=True)
-    await interaction.response.send_message(f"⏳ Обрабатываю...")
-    if not roblox_nick: roblox_nick = "Не указан"
-    await perform_ochs(user, reason, roblox_nick, proof, interaction.user.mention)
-    await interaction.followup.send(embed=discord.Embed(description=f"# ✅ {user.mention} забанен.", color=discord.Color(16711680)))
-
-@bot.tree.command(name="очс", description="Забанить везде", guild=MAIN_OBJ)
-@app_commands.describe(user="Пользователь", reason="Причина", roblox_nick="Ник в РБ", proof="Док-во")
-@is_ochs_staff()
-async def ochs_main(interaction: discord.Interaction, user: discord.User, reason: str, roblox_nick: str = None, proof: str = None):
-    if user.id == interaction.user.id: return await interaction.response.send_message("❌ Нельзя себя!", ephemeral=True)
-    await interaction.response.send_message(f"⏳ Обрабатываю...")
-    if not roblox_nick: roblox_nick = "Не указан"
-    await perform_ochs(user, reason, roblox_nick, proof, interaction.user.mention)
-    await interaction.followup.send(embed=discord.Embed(description=f"# ✅ {user.mention} забанен.", color=discord.Color(16711680)))
-
-@bot.tree.command(name="вынести-из-очс", description="Разбанить", guild=KAP_OBJ)
-@is_ochs_staff()
-async def unban_kap(interaction: discord.Interaction, user: discord.User): await handle_unban(interaction, user)
-
-@bot.tree.command(name="вынести-из-очс", description="Разбанить", guild=MAIN_OBJ)
-@is_ochs_staff()
-async def unban_main(interaction: discord.Interaction, user: discord.User): await handle_unban(interaction, user)
-
-@bot.tree.command(name="очс-список", description="Показать ЧС", guild=KAP_OBJ)
-@is_ochs_staff()
-async def list_bans_kap(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=False)
-    bans = db.get_all_bans()
-    if not bans: return await interaction.followup.send("📭 Пусто.")
-    for i in range(0, len(bans), 5):
-        desc = "# 📋 ОЧС\n\n"
-        for d_id, d_name, r_nick, reason, mod, date, proof in bans[i:i+5]:
-            desc += f"**👤 {d_name}** (`{d_id}`)\n**R:** {r_nick}\n**Причина:** {reason}\n**Мод:** {mod}\n**Дата:** {date}\n\n"
-        await interaction.followup.send(embed=discord.Embed(description=desc, color=discord.Color(16711680)))
-
-@bot.tree.command(name="очс-список", description="Показать ЧС", guild=MAIN_OBJ)
-@is_ochs_staff()
-async def list_bans_main(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=False)
-    bans = db.get_all_bans()
-    if not bans: return await interaction.followup.send("📭 Пусто.")
-    for i in range(0, len(bans), 5):
-        desc = "# 📋 ОЧС\n\n"
-        for d_id, d_name, r_nick, reason, mod, date, proof in bans[i:i+5]:
-            desc += f"**👤 {d_name}** (`{d_id}`)\n**R:** {r_nick}\n**Причина:** {reason}\n**Мод:** {mod}\n**Дата:** {date}\n\n"
-        await interaction.followup.send(embed=discord.Embed(description=desc, color=discord.Color(16711680)))
-
-@bot.tree.command(name="времроль", description="Выдать роль", guild=KAP_OBJ)
-@app_commands.describe(user="Кому", role="Какую", hours="Часов")
-@is_ochs_staff()
-async def temp_role_kap(interaction: discord.Interaction, user: discord.Member, role: discord.Role, hours: float = 1.0): await handle_temp_role(interaction, user, role, hours)
-
-@bot.tree.command(name="времроль", description="Выдать роль", guild=MAIN_OBJ)
-@app_commands.describe(user="Кому", role="Какую", hours="Часов")
-@is_ochs_staff()
-async def temp_role_main(interaction: discord.Interaction, user: discord.Member, role: discord.Role, hours: float = 1.0): await handle_temp_role(interaction, user, role, hours)
-
-async def handle_temp_role(interaction, user, role, hours):
-    expire = datetime.datetime.now().timestamp() + (hours * 3600)
-    try: await user.add_roles(role)
-    except Exception as e: return await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
-    conn = sqlite3.connect(db.DB_NAME)
-    c = conn.cursor()
-    c.execute("INSERT INTO temp_roles (discord_id, role_id, expire_at) VALUES (?, ?, ?)", (user.id, role.id, expire))
-    conn.commit(); conn.close()
-    await interaction.response.send_message(embed=discord.Embed(description=f"## ✅ Роль выдана на {hours} ч.", color=discord.Color(16711680)), ephemeral=True)
-
-@bot.tree.command(name="снятьроль", description="Снять роль", guild=KAP_OBJ)
-@app_commands.describe(user="У кого", role="Какую")
-@is_ochs_staff()
-async def remove_role_kap(interaction: discord.Interaction, user: discord.Member, role: discord.Role): await handle_remove_role(interaction, user, role)
-
-@bot.tree.command(name="снятьроль", description="Снять роль", guild=MAIN_OBJ)
-@app_commands.describe(user="У кого", role="Какую")
-@is_ochs_staff()
-async def remove_role_main(interaction: discord.Interaction, user: discord.Member, role: discord.Role): await handle_remove_role(interaction, user, role)
-
-async def handle_remove_role(interaction, user, role):
-    try:
-        await user.remove_roles(role)
-        await interaction.response.send_message(embed=discord.Embed(description="## ✅ Роль снята.", color=discord.Color(16711680)), ephemeral=True)
-    except Exception as e: await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
-
-@bot.tree.command(name="профиль", description="Ваш профиль", guild=KAP_OBJ)
-async def profile_kap(interaction: discord.Interaction, user: discord.User = None): await handle_profile(interaction, user)
-
-@bot.tree.command(name="профиль", description="Ваш профиль", guild=MAIN_OBJ)
-async def profile_main(interaction: discord.Interaction, user: discord.User = None): await handle_profile(interaction, user)
-
-async def handle_profile(interaction, user=None):
-    await interaction.response.defer(ephemeral=True)
-    target = user or interaction.user
-    roblox_id = db.check_link(target.id)
-    if not roblox_id: return await interaction.followup.send(f"❌ {target.mention} не верифицирован. Нажмите кнопку в канале верификации.", ephemeral=True)
-    embed = discord.Embed(description=f"## 👤 {target.mention}\n**Roblox ID:** `{roblox_id}`\n[Профиль](https://www.roblox.com/users/{roblox_id}/profile)", color=discord.Color(16711680))
-    await interaction.followup.send(embed=embed, ephemeral=True)
 
 bot.run(TOKEN)
