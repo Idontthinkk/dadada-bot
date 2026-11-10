@@ -177,7 +177,22 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.response.send_message(embed=discord.Embed(description="## ❌ У вас нет прав.", color=discord.Color(16711680)), ephemeral=True)
 
 # =====================================================================
-# ВЕРИФИКАЦИЯ (С АВАТАРКОЙ В ЛС)
+# ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ПОЛНОГО НИКА ИЗ РОБЛОКСА
+# =====================================================================
+async def get_roblox_display_name(roblox_id):
+    url = f"https://users.roblox.com/v1/users/{roblox_id}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, timeout=5) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("displayName") or data.get("name")
+    except: pass
+    return None
+
+# =====================================================================
+# ВЕРИФИКАЦИЯ (С АВАТАРКОЙ И ПРАВИЛЬНЫМ НИКОМ)
 # =====================================================================
 async def push_code_to_firebase(code, discord_id):
     url = f"{FIREBASE_URL}/codes/{code}.json"
@@ -211,13 +226,23 @@ async def check_firebase_codes():
                                 if role_verify: await member.add_roles(role_verify)
                                 if role_unreg and role_unreg in member.roles: await member.remove_roles(role_unreg)
                                 
+                                # Меняем никнейм
                                 try:
-                                    new_nick = f"{member.name} (@{roblox_name})"
-                                    if len(new_nick) > 32: new_nick = roblox_name
-                                    if len(new_nick) > 32: new_nick = new_nick[:32]
-                                    await member.edit(nick=new_nick)
+                                    if roblox_name and roblox_name.strip() != "":
+                                        # Берем display_name дискорда
+                                        ds_display = member.display_name
+                                        new_nick = f"{ds_display} (@{roblox_name})"
+                                        
+                                        # Если не влезает в 32 символа - ставим только РБ ник
+                                        if len(new_nick) > 32: 
+                                            new_nick = roblox_name
+                                        if len(new_nick) > 32: 
+                                            new_nick = new_nick[:32]
+                                            
+                                        await member.edit(nick=new_nick)
                                 except: pass
 
+                                # Отправляем ЛС
                                 try:
                                     embed = discord.Embed(
                                         title="✅ Успешная верификация!",
@@ -243,7 +268,56 @@ async def check_firebase_codes():
 async def firebase_verification_loop(): await check_firebase_codes()
 
 # =====================================================================
-# ОСТАЛЬНОЙ КОД (ЧСП, ОЧС, РОЛИ)
+# ОБНОВЛЕННАЯ КОМАНДА /обновитьник
+# =====================================================================
+@bot.tree.command(name="обновитьник", description="[АДМИН] Обновить ники всем верифицированным", guild=KAP_OBJ)
+@is_creator()
+async def update_all_nicks(interaction: discord.Interaction):
+    await interaction.response.send_message("⏳ Начинаю обновление ников для всех верифицированных...")
+    
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute("SELECT discord_id, roblox_id FROM links")
+    linked_users = c.fetchall()
+    conn.close()
+
+    guild = bot.get_guild(MAIN_GUILD_ID)
+    if not guild:
+        return await interaction.followup.send("❌ Бот не видит Основной сервер.")
+
+    updated_count = 0
+    error_count = 0
+
+    for discord_id, roblox_id in linked_users:
+        member = guild.get_member(discord_id)
+        if not member: continue
+
+        # Получаем настоящий ник из Роблокса
+        roblox_name = await get_roblox_display_name(roblox_id)
+        await asyncio.sleep(1.2) # Задержка от бана API
+        
+        if not roblox_name:
+            error_count += 1
+            continue
+
+        try:
+            ds_display = member.display_name
+            new_nick = f"{ds_display} (@{roblox_name})"
+            
+            if len(new_nick) > 32: 
+                new_nick = roblox_name
+            if len(new_nick) > 32: 
+                new_nick = new_nick[:32]
+                
+            await member.edit(nick=new_nick)
+            updated_count += 1
+        except:
+            error_count += 1
+
+    await interaction.followup.send(f"✅ Готово! Обновлено: **{updated_count}** ников. Не удалось обновить: **{error_count}**.")
+
+# =====================================================================
+# ОСТАЛЬНОЙ КОД (ЧСП, ОЧС, РОЛИ) БЕЗ ИЗМЕНЕНИЙ
 # =====================================================================
 def extract_group_id(link: str):
     link = link.strip()
@@ -420,9 +494,6 @@ class CheckGroupView(discord.ui.View):
             button.disabled = True
             await interaction.message.edit(view=self)
 
-# =====================================================================
-# ОБНОВЛЕННАЯ КОМАНДА /debug_chsp
-# =====================================================================
 @bot.tree.command(name="debug_chsp", description="[АДМИН] Показать, кто из верифицированных состоит в группе", guild=KAP_OBJ)
 @app_commands.describe(link="Ссылка на группу Roblox или её ID")
 @is_creator()
@@ -435,7 +506,6 @@ async def debug_chsp(interaction: discord.Interaction, link: str):
         
     group_name = await get_group_info(group_id)
     
-    # Берем всех верифицированных из базы
     conn = sqlite3.connect('bot_data.db')
     c = conn.cursor()
     c.execute("SELECT discord_id, roblox_id FROM links")
@@ -445,11 +515,10 @@ async def debug_chsp(interaction: discord.Interaction, link: str):
     matches = []
     checked_count = 0
     
-    # Идем по базе и проверяем, кто в группе
     for discord_id, roblox_id in linked_users:
         checked_count += 1
         u_groups = await get_user_roblox_groups(roblox_id)
-        await asyncio.sleep(1.2) # Лимит, чтобы не забанило API
+        await asyncio.sleep(1.2)
         
         if group_id in u_groups:
             member = bot.get_guild(MAIN_GUILD_ID).get_member(discord_id)
@@ -461,7 +530,6 @@ async def debug_chsp(interaction: discord.Interaction, link: str):
     embed = discord.Embed(title=f"🛠 Отладка группы: {group_name}", color=discord.Color.blue())
     
     if matches:
-        # Если много людей, разбиваем на части, чтобы влезло в эмбед
         chunks = [matches[i:i + 15] for i in range(0, len(matches), 15)]
         for idx, chunk in enumerate(chunks):
             embed.add_field(name=f"Совпадения (часть {idx+1})", value="\n".join(chunk), inline=False)
@@ -471,9 +539,6 @@ async def debug_chsp(interaction: discord.Interaction, link: str):
     embed.set_footer(text=f"Проверено верифицированных: {checked_count}")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-# =====================================================================
-# ОСТАЛЬНЫЕ КОМАНДЫ (ЧСП, ОЧС, РОЛИ) БЕЗ ИЗМЕНЕНИЙ
-# =====================================================================
 @bot.tree.command(name="чсп", description="Добавить группу в ЧСП", guild=KAP_OBJ)
 @app_commands.describe(link="Ссылка", reason="Причина")
 @is_creator()
