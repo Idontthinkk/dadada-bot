@@ -16,7 +16,6 @@ load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 FIREBASE_URL = "https://ssrpbot-2ac7b-default-rtdb.firebaseio.com" 
 
-# ID канала для панели
 VERIFY_CHANNEL_ID = 1569796058413015090 
 
 KAP_GUILD_ID = 1294612883304353812
@@ -32,10 +31,7 @@ CREATOR_ID = 939996361712074832
 OCHS_ROLE_1 = 1360357746972819476
 OCHS_ROLE_2 = 1358192820900466932
 
-# НОВЫЙ ID РОЛИ ВЕРИФИКАЦИИ
 VERIFY_ROLE_ID = 1569799728210772059 
-
-# ССЫЛКА НА ПЛЕЙС
 ROBLOX_PLACE_LINK = "https://www.roblox.com/games/86704551294131/1979"
 
 GUILDS = {
@@ -69,7 +65,7 @@ class VerifyCheckView(discord.ui.View):
             try:
                 await interaction.message.edit(view=self)
             except discord.NotFound:
-                pass # Если сообщение удалено, просто игнорируем
+                pass
         else:
             await interaction.response.send_message("⏳ Бот еще не получил данные от плейса. Введите код в игре и подождите 10 секунд.", ephemeral=True)
 
@@ -79,7 +75,6 @@ class VerifyStartView(discord.ui.View):
 
     @discord.ui.button(label="Пройти верификацию", style=discord.ButtonStyle.success, custom_id="btn_start_verify")
     async def start_verify(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Если уже привязан - выдаем роль (на случай, если ее нет)
         if db.check_link(interaction.user.id):
             guild = bot.get_guild(MAIN_GUILD_ID)
             member = guild.get_member(interaction.user.id)
@@ -123,7 +118,6 @@ class MyBot(commands.Bot):
     async def on_ready(self):
         print(f'[+] Бот запущен как {self.user}')
 
-        # УМНАЯ ОТПРАВКА ПАНЕЛИ (без дублей)
         if VERIFY_CHANNEL_ID != 0:
             channel = self.get_channel(VERIFY_CHANNEL_ID)
             if channel:
@@ -140,9 +134,6 @@ class MyBot(commands.Bot):
                         color=discord.Color.blue()
                     )
                     await channel.send(embed=embed, view=VerifyStartView())
-                    print("[DEBUG] Панель отправлена в канал.")
-                else:
-                    print("[DEBUG] Панель уже есть в канале, дубль не создан.")
 
         if not firebase_verification_loop.is_running(): firebase_verification_loop.start()
         if not monitor_chsp.is_running(): monitor_chsp.start()
@@ -170,7 +161,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.response.send_message(embed=discord.Embed(description="## ❌ У вас нет прав.", color=discord.Color(16711680)), ephemeral=True)
 
 # =====================================================================
-# ВЕРИФИКАЦИЯ
+# ВЕРИФИКАЦИЯ (С ИЗМЕНЕНИЕМ НИКА И АВАТАРКОЙ)
 # =====================================================================
 async def push_code_to_firebase(code, discord_id):
     url = f"{FIREBASE_URL}/codes/{code}.json"
@@ -191,15 +182,27 @@ async def check_firebase_codes():
                         if info.get("status") == "activated":
                             discord_id = info.get("discord_id")
                             roblox_id = info.get("roblox_id")
+                            roblox_name = info.get("roblox_name", "")
+                            avatar_url = info.get("avatar_url", "") # Получаем ссылку на аватарку
+                            
                             db.link_user(discord_id, roblox_id)
                             
                             guild = bot.get_guild(MAIN_GUILD_ID)
                             member = guild.get_member(discord_id)
                             if member:
+                                # 1. Выдаем роль
                                 role = guild.get_role(VERIFY_ROLE_ID)
                                 if role: await member.add_roles(role)
                                 
-                                # КРАСИВОЕ ЛС
+                                # 2. Меняем никнейм
+                                try:
+                                    new_nick = f"{member.name} (@{roblox_name})"
+                                    if len(new_nick) > 32: new_nick = roblox_name
+                                    if len(new_nick) > 32: new_nick = new_nick[:32]
+                                    await member.edit(nick=new_nick)
+                                except: pass
+
+                                # 3. ЛС
                                 try:
                                     embed = discord.Embed(
                                         title="✅ Успешная верификация!",
@@ -211,7 +214,10 @@ async def check_firebase_codes():
                                     )
                                     embed.add_field(name="Ваш Discord", value=member.mention, inline=True)
                                     embed.add_field(name="Ваш Roblox", value=f"[Профиль](https://www.roblox.com/users/{roblox_id}/profile)\nID: `{roblox_id}`", inline=True)
-                                    embed.set_thumbnail(url="https://media.discordapp.net/attachments/1511004157535060058/1565492447872557128/image.png")
+                                    
+                                    # Ставим аватарку игрока
+                                    if avatar_url:
+                                        embed.set_thumbnail(url=avatar_url)
                                     
                                     await member.send(embed=embed)
                                 except: pass
@@ -222,9 +228,7 @@ async def check_firebase_codes():
 @tasks.loop(seconds=10)
 async def firebase_verification_loop(): await check_firebase_codes()
 
-# =====================================================================
-# ОСТАЛЬНЫЕ ФУНКЦИИ (ЧСП, ОЧС, РОЛИ)
-# =====================================================================
+# ... Остальной код (ЧСП, ОЧС, роли, профиль) остается без изменений ...
 def extract_group_id(link: str):
     link = link.strip()
     if link.isdigit(): return int(link)
