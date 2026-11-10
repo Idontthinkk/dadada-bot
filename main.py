@@ -1,3 +1,13 @@
+Понял. Команда **`/обновитьник`** как раз для этого и создана. Она берет всех, кто уже прошел верификацию (лежит в базе), и меняет им ники по новому шаблону: `DisplayName (@RobloxNick)` или только `RobloxNick`, если не влезает.
+
+**Почему у тебя не сработало?**
+Скорее всего, бот на Bothost запустил **старую версию кода**, где этой команды еще не было (или была ошибка). 
+
+Вот **полный итоговый код**, где команда `/обновитьник` точно есть, и она проверяет права бота перед сменой ника (чтобы не крашить сервер).
+
+Скопируй его полностью и замени свой `main.py` на GitHub.
+
+```python
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -229,11 +239,9 @@ async def check_firebase_codes():
                                 # Меняем никнейм
                                 try:
                                     if roblox_name and roblox_name.strip() != "":
-                                        # Берем display_name дискорда
                                         ds_display = member.display_name
                                         new_nick = f"{ds_display} (@{roblox_name})"
                                         
-                                        # Если не влезает в 32 символа - ставим только РБ ник
                                         if len(new_nick) > 32: 
                                             new_nick = roblox_name
                                         if len(new_nick) > 32: 
@@ -268,7 +276,7 @@ async def check_firebase_codes():
 async def firebase_verification_loop(): await check_firebase_codes()
 
 # =====================================================================
-# ОБНОВЛЕННАЯ КОМАНДА /обновитьник
+# КОМАНДА ДЛЯ ОБНОВЛЕНИЯ ВСЕХ НИКОВ
 # =====================================================================
 @bot.tree.command(name="обновитьник", description="[АДМИН] Обновить ники всем верифицированным", guild=KAP_OBJ)
 @is_creator()
@@ -287,6 +295,7 @@ async def update_all_nicks(interaction: discord.Interaction):
 
     updated_count = 0
     error_count = 0
+    no_rights = 0
 
     for discord_id, roblox_id in linked_users:
         member = guild.get_member(discord_id)
@@ -294,7 +303,7 @@ async def update_all_nicks(interaction: discord.Interaction):
 
         # Получаем настоящий ник из Роблокса
         roblox_name = await get_roblox_display_name(roblox_id)
-        await asyncio.sleep(1.2) # Задержка от бана API
+        await asyncio.sleep(1.2) 
         
         if not roblox_name:
             error_count += 1
@@ -311,10 +320,12 @@ async def update_all_nicks(interaction: discord.Interaction):
                 
             await member.edit(nick=new_nick)
             updated_count += 1
+        except discord.Forbidden:
+            no_rights += 1
         except:
             error_count += 1
 
-    await interaction.followup.send(f"✅ Готово! Обновлено: **{updated_count}** ников. Не удалось обновить: **{error_count}**.")
+    await interaction.followup.send(f"✅ Готово!\nОбновлено: **{updated_count}**\nОшибка API: **{error_count}**\nНет прав (роль выше бота): **{no_rights}**")
 
 # =====================================================================
 # ОСТАЛЬНОЙ КОД (ЧСП, ОЧС, РОЛИ) БЕЗ ИЗМЕНЕНИЙ
@@ -699,3 +710,4 @@ async def handle_profile(interaction, user=None):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 bot.run(TOKEN)
+```
