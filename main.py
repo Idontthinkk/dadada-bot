@@ -579,4 +579,33 @@ async def handle_temp_role(interaction, user, role, hours):
 @is_ochs_staff()
 async def remove_role_kap(interaction: discord.Interaction, user: discord.Member, role: discord.Role): await handle_remove_role(interaction, user, role)
 
-@bot.tree.command(name="снятьроль
+@bot.tree.command(name="снятьроль", description="Снять роль", guild=MAIN_OBJ)
+@app_commands.describe(user="У кого", role="Какую")
+@is_ochs_staff()
+async def remove_role_main(interaction: discord.Interaction, user: discord.Member, role: discord.Role): await handle_remove_role(interaction, user, role)
+
+async def handle_remove_role(interaction, user, role):
+    try:
+        await user.remove_roles(role)
+        await interaction.response.send_message(embed=discord.Embed(description="## ✅ Роль снята.", color=discord.Color(16711680)), ephemeral=True)
+    except Exception as e: await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+
+@bot.tree.command(name="профиль", description="Показать ваш Roblox профиль", guild=KAP_OBJ)
+async def profile_kap(interaction: discord.Interaction, user: discord.User = None): await handle_profile(interaction, user)
+
+@bot.tree.command(name="профиль", description="Показать ваш Roblox профиль", guild=MAIN_OBJ)
+async def profile_main(interaction: discord.Interaction, user: discord.User = None): await handle_profile(interaction, user)
+
+async def handle_profile(interaction, user=None):
+    await interaction.response.defer(ephemeral=True)
+    target = user or interaction.user
+    roblox_id = db.check_link(target.id)
+    
+    if not roblox_id: 
+        return await interaction.followup.send(f"❌ {target.mention} еще не прошел верификацию. Используйте `/верификация`.", ephemeral=True)
+    
+    embed = discord.Embed(description=f"## 👤 Профиль {target.mention}\n**Roblox ID:** `{roblox_id}`\n**Ссылка:** [Профиль](https://www.roblox.com/users/{roblox_id}/profile)", color=discord.Color(16711680))
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+# Запуск
+bot.run(TOKEN)
