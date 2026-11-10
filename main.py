@@ -16,8 +16,8 @@ load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 FIREBASE_URL = "https://ssrpbot-2ac7b-default-rtdb.firebaseio.com" 
 
-# ВСТАВЬ СЮДА ID КАНАЛА, ГДЕ БУДЕТ КНОПКА
-VERIFY_CHANNEL_ID = 0 
+# ВСТАВЬ СЮДА ID КАНАЛА, ГДЕ БУДЕТ ПАНЕЛЬ
+VERIFY_CHANNEL_ID = 1569796058413015090
 
 KAP_GUILD_ID = 1294612883304353812
 MAIN_GUILD_ID = 1292881174443720767
@@ -48,7 +48,7 @@ intents.members = True
 intents.message_content = True
 
 # =====================================================================
-# КНОПКИ ДЛЯ ВЕРИФИКАЦИИ
+# КНОПКИ (GUI)
 # =====================================================================
 class VerifyCheckView(discord.ui.View):
     def __init__(self, code):
@@ -63,7 +63,7 @@ class VerifyCheckView(discord.ui.View):
             button.disabled = True
             await interaction.message.edit(view=self)
         else:
-            await interaction.response.send_message("⏳ Бот еще не получил данные от плейса. Убедитесь, что вы ввели код в игре, и подождите 10 секунд.", ephemeral=True)
+            await interaction.response.send_message("⏳ Бот еще не получил данные от плейса. Введите код в игре и подождите 10 секунд.", ephemeral=True)
 
 class VerifyStartView(discord.ui.View):
     def __init__(self):
@@ -71,18 +71,16 @@ class VerifyStartView(discord.ui.View):
 
     @discord.ui.button(label="Пройти верификацию", style=discord.ButtonStyle.success, custom_id="btn_start_verify")
     async def start_verify(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Проверяем, не привязан ли уже
         if db.check_link(interaction.user.id):
             return await interaction.response.send_message("❌ Вы уже верифицированы!", ephemeral=True)
 
-        # Генерируем код
         code = f"SSRP-{random.randint(10000, 99999)}"
         await push_code_to_firebase(code, interaction.user.id)
         
         embed = discord.Embed(
             title="Инструкция по верификации",
             description=f"1. Ваш код: **`{code}`**\n"
-                        f"2. Зайдите в плейс верификации: [ССЫЛКА НА ПЛЕЙС](https://www.roblox.com/games/0000000000/)\n"
+                        f"2. Зайдите в плейс верификации.\n"
                         f"3. Введите код в игре.\n"
                         f"4. Нажмите кнопку **«Проверить»** ниже.\n\n"
                         f"*Код действует 10 минут.*",
@@ -101,16 +99,19 @@ class MyBot(commands.Bot):
         db.init_db()
         self.add_view(VerifyStartView()) 
         self.add_view(VerifyCheckView("")) 
+        self.tree.copy_global_to(guild=KAP_OBJ)
+        await self.tree.sync(guild=KAP_OBJ)
+        self.tree.copy_global_to(guild=MAIN_OBJ)
+        await self.tree.sync(guild=MAIN_OBJ)
 
     async def on_ready(self):
         print(f'[+] Бот запущен как {self.user}')
 
-        # Отправляем панель в канал (если ее там нет)
+        # Автоматическая отправка панели
         if VERIFY_CHANNEL_ID != 0:
             channel = self.get_channel(VERIFY_CHANNEL_ID)
             if channel:
-                # Проверяем, есть ли уже сообщение с кнопкой
-                async for msg in channel.history(limit=10):
+                async for msg in channel.history(limit=5):
                     if msg.author == self.user and msg.components:
                         break
                 else:
@@ -120,14 +121,10 @@ class MyBot(commands.Bot):
                         color=discord.Color.blue()
                     )
                     await channel.send(embed=embed, view=VerifyStartView())
-                    print("[+] Панель верификации отправлена в канал.")
 
-        if not firebase_verification_loop.is_running():
-            firebase_verification_loop.start()
-        if not monitor_chsp.is_running():
-            monitor_chsp.start()
-        if not check_deadlines_loop.is_running():
-            check_deadlines_loop.start()
+        if not firebase_verification_loop.is_running(): firebase_verification_loop.start()
+        if not monitor_chsp.is_running(): monitor_chsp.start()
+        if not check_deadlines_loop.is_running(): check_deadlines_loop.start()
 
 bot = MyBot()
 
@@ -151,7 +148,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.response.send_message(embed=discord.Embed(description="## ❌ У вас нет прав.", color=discord.Color(16711680)), ephemeral=True)
 
 # =====================================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ВСПОМОГАТЕЛЬНЫЕ
 # =====================================================================
 async def push_code_to_firebase(code, discord_id):
     url = f"{FIREBASE_URL}/codes/{code}.json"
@@ -560,7 +557,7 @@ async def handle_profile(interaction, user=None):
     await interaction.response.defer(ephemeral=True)
     target = user or interaction.user
     roblox_id = db.check_link(target.id)
-    if not roblox_id: return await interaction.followup.send(f"❌ {target.mention} не верифицирован. Используйте `/верификация`.", ephemeral=True)
+    if not roblox_id: return await interaction.followup.send(f"❌ {target.mention} не верифицирован. Нажмите кнопку в канале верификации.", ephemeral=True)
     embed = discord.Embed(description=f"## 👤 {target.mention}\n**Roblox ID:** `{roblox_id}`\n[Профиль](https://www.roblox.com/users/{roblox_id}/profile)", color=discord.Color(16711680))
     await interaction.followup.send(embed=embed, ephemeral=True)
 
