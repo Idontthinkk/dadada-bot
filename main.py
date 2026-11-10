@@ -30,7 +30,7 @@ MAIN_OBJ = discord.Object(id=MAIN_GUILD_ID)
 CREATOR_ID = 939996361712074832
 OCHS_ROLE_1 = 1360357746972819476
 OCHS_ROLE_2 = 1358192820900466932
-VERIFY_ROLE_ID = 1511001116559802368 # Роль, которая выдается после верификации
+VERIFY_ROLE_ID = 1511001116559802368
 
 GUILDS = {
     1252308402722574416: "Аэрофлот", 1294972362197958656: "Пожарка",
@@ -162,23 +162,19 @@ async def check_firebase_codes():
                             discord_id = info.get("discord_id")
                             roblox_id = info.get("roblox_id")
                             
-                            # 1. Сохраняем привязку
                             db.link_user(discord_id, roblox_id)
                             
-                            # 2. Выдаем роль
                             guild = bot.get_guild(MAIN_GUILD_ID)
                             member = guild.get_member(discord_id)
                             if member:
                                 role = guild.get_role(VERIFY_ROLE_ID)
                                 if role: await member.add_roles(role)
                             
-                            # 3. Уведомление
                             try:
                                 user = await bot.fetch_user(discord_id)
                                 await user.send("✅ **Успешная верификация!** Вы успешно привязали аккаунт Roblox.")
                             except: pass
                             
-                            # 4. Удаление кода
                             await session.delete(f"{FIREBASE_URL}/codes/{code}.json")
     except Exception:
         pass
@@ -552,7 +548,7 @@ async def list_bans_main(interaction: discord.Interaction):
         await interaction.followup.send(embed=discord.Embed(description=desc, color=discord.Color(16711680)))
 
 # =====================================================================
-# ОБЩИЕ КОМАНДЫ (ВРЕМРОЛЬ, СНЯТЬРОЛЬ, ПРОФИЛЬ)
+# ОБЩИЕ КОМАНДЫ
 # =====================================================================
 @bot.tree.command(name="времроль", description="Выдать роль на время", guild=KAP_OBJ)
 @app_commands.describe(user="Кому", role="Какую", hours="Часов")
