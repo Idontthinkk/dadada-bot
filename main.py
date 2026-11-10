@@ -52,26 +52,38 @@ class MyBot(commands.Bot):
 
     async def setup_hook(self):
         db.init_db()
-        self.tree.copy_global_to(guild=KAP_OBJ)
-        await self.tree.sync(guild=KAP_OBJ)
-        self.tree.copy_global_to(guild=MAIN_OBJ)
-        await self.tree.sync(guild=MAIN_OBJ)
-        print("[+] Команды синхронизированы.")
+        
+        # ПРИНУДИТЕЛЬНАЯ ОЧИСТКА И СИНХРОНИЗАЦИЯ
+        try:
+            self.tree.clear_commands(guild=KAP_OBJ)
+            await self.tree.sync(guild=KAP_OBJ)
+            
+            self.tree.clear_commands(guild=MAIN_OBJ)
+            await self.tree.sync(guild=MAIN_OBJ)
+            
+            self.tree.copy_global_to(guild=KAP_OBJ)
+            await self.tree.sync(guild=KAP_OBJ)
+            
+            self.tree.copy_global_to(guild=MAIN_OBJ)
+            await self.tree.sync(guild=MAIN_OBJ)
+            print("[+] Команды ОЧИЩЕНЫ и синхронизированы заново.")
+        except Exception as e:
+            print(f"[!] Ошибка синхронизации: {e}")
 
     async def on_ready(self):
         print(f'[+] Бот запущен как {self.user}')
 
         if not firebase_verification_loop.is_running():
             firebase_verification_loop.start()
-            print("[*] Таймер верификации Firebase запущен (каждые 10 сек).")
+            print("[*] Таймер верификации Firebase запущен.")
 
         if not monitor_chsp.is_running():
             monitor_chsp.start()
-            print("[*] Таймер проверки ЧСП запущен (раз в 30 мин).")
+            print("[*] Таймер проверки ЧСП запущен.")
 
         if not check_deadlines_loop.is_running():
             check_deadlines_loop.start()
-            print("[*] Таймер дедлайнов ЧСП запущен (раз в 1 мин).")
+            print("[*] Таймер дедлайнов ЧСП запущен.")
 
 bot = MyBot()
 
