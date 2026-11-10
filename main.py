@@ -35,7 +35,6 @@ VERIFY_ROLE_ID = 1569799728210772059
 UNREGISTERED_ROLE_ID = 1511000147969048699
 ROBLOX_PLACE_LINK = "https://www.roblox.com/games/86704551294131/1979"
 
-# ТА САМАЯ КАРТИНКА ДЛЯ ГЛАВНОГО МЕНЮ
 MAIN_MENU_IMAGE = "https://media.discordapp.net/attachments/1511004157535060058/1565492447872557128/image.png?ex=6af44335&is=6af2f1b5&hm=e4183d233b4e591df5a245feebbb017c5d229167bd9ad79ac337fb613cf06f86&=&format=webp&quality=lossless&width=1593&height=856"
 
 GUILDS = {
@@ -92,7 +91,6 @@ class VerifyStartView(discord.ui.View):
         code = f"SSRP-{random.randint(10000, 99999)}"
         await push_code_to_firebase(code, interaction.user.id)
         
-        # Ссылка на плейс в виде кнопки
         view = discord.ui.View()
         view.add_item(discord.ui.Button(label="Перейти в плейс", style=discord.ButtonStyle.link, url=ROBLOX_PLACE_LINK))
         
@@ -134,13 +132,12 @@ class MyBot(commands.Bot):
                         break
                 
                 if not found_panel:
-                    # ДОБАВЛЯЕМ КАРТИНКУ В ГЛАВНОЕ МЕНЮ
                     embed = discord.Embed(
                         title="Верификация аккаунта",
                         description="Нажмите на кнопку ниже, чтобы привязать аккаунт Roblox к вашему Discord.\n\n*Безопасно: мы не запрашиваем данные вашего аккаунта, вы просто зайдете в плейс.*",
                         color=discord.Color.blue()
                     )
-                    embed.set_image(url=MAIN_MENU_IMAGE) # <--- КАРТИНКА ЗДЕСЬ
+                    embed.set_image(url=MAIN_MENU_IMAGE)
                     await channel.send(embed=embed, view=VerifyStartView())
 
         if not firebase_verification_loop.is_running(): firebase_verification_loop.start()
@@ -233,7 +230,6 @@ async def check_firebase_codes():
                                     embed.add_field(name="Ваш Discord", value=member.mention, inline=True)
                                     embed.add_field(name="Ваш Roblox", value=f"[Профиль](https://www.roblox.com/users/{roblox_id}/profile)\nID: `{roblox_id}`", inline=True)
                                     
-                                    # АВАТАРКА ИГРОКА В ПРАВОМ ВЕРХНЕМ УГЛУ ЛС
                                     if avatar_url:
                                         embed.set_thumbnail(url=avatar_url)
                                     
@@ -246,7 +242,9 @@ async def check_firebase_codes():
 @tasks.loop(seconds=10)
 async def firebase_verification_loop(): await check_firebase_codes()
 
-# ... ОСТАЛЬНОЙ КОД (ЧСП, ОЧС, РОЛИ) БЕЗ ИЗМЕНЕНИЙ ...
+# =====================================================================
+# ОСТАЛЬНОЙ КОД (ЧСП, ОЧС, РОЛИ)
+# =====================================================================
 def extract_group_id(link: str):
     link = link.strip()
     if link.isdigit(): return int(link)
@@ -422,39 +420,60 @@ class CheckGroupView(discord.ui.View):
             button.disabled = True
             await interaction.message.edit(view=self)
 
-@bot.tree.command(name="debug_chsp", description="[АДМИН] Отладка ЧСП", guild=KAP_OBJ)
-@app_commands.describe(user="Пользователь", link="Ссылка на группу")
+# =====================================================================
+# ОБНОВЛЕННАЯ КОМАНДА /debug_chsp
+# =====================================================================
+@bot.tree.command(name="debug_chsp", description="[АДМИН] Показать, кто из верифицированных состоит в группе", guild=KAP_OBJ)
+@app_commands.describe(link="Ссылка на группу Roblox или её ID")
 @is_creator()
-async def debug_chsp(interaction: discord.Interaction, user: discord.Member = None, link: str = None):
+async def debug_chsp(interaction: discord.Interaction, link: str):
     await interaction.response.defer(ephemeral=True)
-    embed = discord.Embed(title="🛠 Отладка ЧСП", color=discord.Color.blue())
-    if link:
-        group_id = extract_group_id(link)
-        if not group_id: return await interaction.followup.send("❌ Неверный ID.", ephemeral=True)
-        group_name = await get_group_info(group_id)
-        conn = sqlite3.connect('bot_data.db')
-        c = conn.cursor()
-        c.execute("SELECT discord_id, roblox_id FROM links")
-        linked_users = c.fetchall()
-        conn.close()
-        matches = []
-        for discord_id, roblox_id in linked_users:
-            u_groups = await get_user_roblox_groups(roblox_id)
-            if group_id in u_groups:
-                member = bot.get_guild(MAIN_GUILD_ID).get_member(discord_id)
-                if member: matches.append(f"👤 {member.name} (`{discord_id}`)")
-        embed.add_field(name=f"Группа: {group_name}", value="\n".join(matches) if matches else "Нет", inline=False)
-    elif user:
-        roblox_id = db.check_link(user.id)
-        embed.add_field(name="Пользователь", value=f"{user.mention}\n**Roblox:** `{roblox_id or 'Не верифицирован'}`", inline=False)
-        if roblox_id:
-            user_groups = await get_user_roblox_groups(roblox_id)
-            chsp_groups = db.get_all_chsp_groups()
-            matches = [f"🔹 {g_name}" for g_id, g_name, _ in chsp_groups if g_id in user_groups]
-            embed.add_field(name="Найден в ЧСП", value="\n".join(matches) if matches else "Нет", inline=False)
-    else: embed.add_field(name="Инфо", value="Укажите `user` или `link`.", inline=False)
+    
+    group_id = extract_group_id(link)
+    if not group_id:
+        return await interaction.followup.send("❌ Неверный формат ссылки или ID.", ephemeral=True)
+        
+    group_name = await get_group_info(group_id)
+    
+    # Берем всех верифицированных из базы
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute("SELECT discord_id, roblox_id FROM links")
+    linked_users = c.fetchall()
+    conn.close()
+    
+    matches = []
+    checked_count = 0
+    
+    # Идем по базе и проверяем, кто в группе
+    for discord_id, roblox_id in linked_users:
+        checked_count += 1
+        u_groups = await get_user_roblox_groups(roblox_id)
+        await asyncio.sleep(1.2) # Лимит, чтобы не забанило API
+        
+        if group_id in u_groups:
+            member = bot.get_guild(MAIN_GUILD_ID).get_member(discord_id)
+            if member:
+                matches.append(f"👤 **{member.name}** (`{discord_id}`) | Роблокс ID: `{roblox_id}`")
+            else:
+                matches.append(f"👤 Discord ID: `{discord_id}` | Роблокс ID: `{roblox_id}`")
+                
+    embed = discord.Embed(title=f"🛠 Отладка группы: {group_name}", color=discord.Color.blue())
+    
+    if matches:
+        # Если много людей, разбиваем на части, чтобы влезло в эмбед
+        chunks = [matches[i:i + 15] for i in range(0, len(matches), 15)]
+        for idx, chunk in enumerate(chunks):
+            embed.add_field(name=f"Совпадения (часть {idx+1})", value="\n".join(chunk), inline=False)
+    else:
+        embed.description = "❌ В этой группе нет никого из верифицированных пользователей."
+        
+    embed.set_footer(text=f"Проверено верифицированных: {checked_count}")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
+# =====================================================================
+# ОСТАЛЬНЫЕ КОМАНДЫ (ЧСП, ОЧС, РОЛИ) БЕЗ ИЗМЕНЕНИЙ
+# =====================================================================
 @bot.tree.command(name="чсп", description="Добавить группу в ЧСП", guild=KAP_OBJ)
 @app_commands.describe(link="Ссылка", reason="Причина")
 @is_creator()
