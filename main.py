@@ -13,10 +13,8 @@ import database as db
 
 load_dotenv()
 
-# === ТОКЕНЫ БЕРУТСЯ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ (BOTHOST) ===
+# === ТОКЕН И FIREBASE ===
 TOKEN = os.getenv('DISCORD_TOKEN')
-
-# === ССЫЛКА НА FIREBASE ===
 FIREBASE_URL = "https://ssrpbot-2ac7b-default-rtdb.firebaseio.com" 
 
 KAP_GUILD_ID = 1294612883304353812
@@ -28,7 +26,7 @@ APPEAL_LINK = "https://discord.gg/QUUVRgMqMN"
 KAP_OBJ = discord.Object(id=KAP_GUILD_ID)
 MAIN_OBJ = discord.Object(id=MAIN_GUILD_ID)
 
-# ID для проверки прав
+# ID для проверки прав и ролей
 CREATOR_ID = 939996361712074832
 OCHS_ROLE_1 = 1360357746972819476
 OCHS_ROLE_2 = 1358192820900466932
@@ -62,15 +60,15 @@ class MyBot(commands.Bot):
 
     async def on_ready(self):
         print(f'[+] Бот запущен как {self.user}')
-        
+
         if not firebase_verification_loop.is_running():
             firebase_verification_loop.start()
             print("[*] Таймер верификации Firebase запущен (каждые 10 сек).")
-            
+
         if not monitor_chsp.is_running():
             monitor_chsp.start()
             print("[*] Таймер проверки ЧСП запущен (раз в 30 мин).")
-            
+
         if not check_deadlines_loop.is_running():
             check_deadlines_loop.start()
             print("[*] Таймер дедлайнов ЧСП запущен (раз в 1 мин).")
@@ -164,26 +162,26 @@ async def check_firebase_codes():
                             discord_id = info.get("discord_id")
                             roblox_id = info.get("roblox_id")
                             
-                            # 1. Сохраняем привязку в локальную БД
+                            # 1. Сохраняем привязку
                             db.link_user(discord_id, roblox_id)
                             
-                            # 2. Выдаем роль на сервере
+                            # 2. Выдаем роль
                             guild = bot.get_guild(MAIN_GUILD_ID)
                             member = guild.get_member(discord_id)
                             if member:
                                 role = guild.get_role(VERIFY_ROLE_ID)
                                 if role: await member.add_roles(role)
                             
-                            # 3. Уведомляем игрока в ЛС
+                            # 3. Уведомление
                             try:
                                 user = await bot.fetch_user(discord_id)
                                 await user.send("✅ **Успешная верификация!** Вы успешно привязали аккаунт Roblox.")
                             except: pass
                             
-                            # 4. Удаляем код из Firebase (он одноразовый)
+                            # 4. Удаление кода
                             await session.delete(f"{FIREBASE_URL}/codes/{code}.json")
-    except Exception as e:
-        pass # Игнорируем ошибки сети, чтобы не спамить в консоль
+    except Exception:
+        pass
 
 @tasks.loop(seconds=10)
 async def firebase_verification_loop():
@@ -193,7 +191,6 @@ async def firebase_verification_loop():
 async def verify_user(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     
-    # Проверяем, не привязан ли уже
     if db.check_link(interaction.user.id):
         return await interaction.followup.send("❌ Вы уже верифицированы!", ephemeral=True)
 
@@ -212,15 +209,14 @@ async def verify_user(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 # =====================================================================
-# ЛОГИКА ЧСП (БЕЗ BLOXLINK, БЕРЕМ ID ИЗ БАЗЫ)
+# ЛОГИКА ЧСП
 # =====================================================================
 async def perform_global_chsp_check():
     chsp_groups = db.get_all_chsp_groups()
     if not chsp_groups: return "Групп в ЧСП нет."
 
-    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [*] Запущена проверка ЧСП...")
+    print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] [*] Запущена проверка ЧСП...")
     
-    # Берем всех привязанных игроков из БД
     conn = sqlite3.connect('bot_data.db')
     c = conn.cursor()
     c.execute("SELECT discord_id, roblox_id FROM links")
@@ -246,7 +242,7 @@ async def perform_global_chsp_check():
         
         checked_users += 1
         user_groups = await get_user_roblox_groups(roblox_id)
-        await asyncio.sleep(1.2) # Лимит 50 чел/мин
+        await asyncio.sleep(1.2)
         
         for group_id, group_name, group_link in chsp_groups:
             if group_id in user_groups:
@@ -277,39 +273,12 @@ async def perform_global_chsp_check():
                     except: pass
                     del pending_dict[discord_id][group_id]
 
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [*] Проверка завершена.")
     return f"✅ Проверка завершена. Проверено: **{checked_users}**. Предупреждений: **{warned_count}**."
 
 @tasks.loop(minutes=30)
 async def monitor_chsp():
     await perform_global_chsp_check()
-
-# =====================================================================
-# КНОПКА ПРОВЕРКИ ЧСП ("Я ВЫШЕЛ")
-# =====================================================================
-class CheckGroupView(discord.ui.View):
-    def __init__(self, group_id, group_name):
-        super().__init__(timeout=None)
-        self.group_id = group_id
-        self.group_name = group_name
-
-    @discord.ui.button(label="Я вышел / Перепроверить", style=discord.ButtonStyle.success, custom_id="check_leave")
-    async def check_leave(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        
-        roblox_id = db.check_link(interaction.user.id)
-        if not roblox_id:
-            return await interaction.followup.send("❌ Вы не верифицированы.", ephemeral=True)
-
-        user_groups = await get_user_roblox_groups(roblox_id)
-        
-        if self.group_id in user_groups:
-            await interaction.followup.send(f"❌ **Вы все еще состоите в группе {self.group_name}!**", ephemeral=True)
-        else:
-            db.remove_pending_chsp(interaction.user.id, self.group_id)
-            db.add_strike(interaction.user.id)
-            await interaction.followup.send(f"✅ **Спасибо! Вы вышли из группы {self.group_name}.**\nОбвинения с вас сняты.", ephemeral=True)
-            button.disabled = True
-            await interaction.message.edit(view=self)
 
 @tasks.loop(minutes=1)
 async def check_deadlines_loop():
@@ -334,7 +303,7 @@ async def check_deadlines_loop():
         except: pass
 
 # =====================================================================
-# БАН И РАЗБАН
+# БАН И РАЗБАН (ОЧС)
 # =====================================================================
 async def perform_ochs(user: discord.User, reason: str, roblox_nick: str, proof: str, moderator_name: str):
     now = datetime.datetime.now()
@@ -361,6 +330,175 @@ async def perform_ochs(user: discord.User, reason: str, roblox_nick: str, proof:
 
     await asyncio.gather(*[ban_guild(g_id) for g_id in GUILDS.keys()])
 
+async def handle_unban(interaction: discord.Interaction, user: discord.User):
+    await interaction.response.send_message(f"⏳ **Принято.** Разбаниваю {user.mention}...")
+    async def unban_guild(g_id):
+        guild = bot.get_guild(g_id)
+        if not guild: return
+        try:
+            await guild.fetch_ban(user)
+            await asyncio.wait_for(guild.unban(user, reason=f"Вынесен из ОЧС"), timeout=3.0)
+        except: pass
+
+    await asyncio.gather(*[unban_guild(g_id) for g_id in GUILDS.keys()])
+    
+    try:
+        db.remove_ban(user.id)
+        db.remove_pending_chsp(user.id)
+        db_status = "✅ Удален из базы"
+    except: db_status = "❌ Ошибка БД"
+
+    await interaction.followup.send(embed=discord.Embed(description=f"# ✅ Вынесен из ОЧС {user.mention}\n**База:** {db_status}", color=discord.Color(16711680)))
+
+# =====================================================================
+# КНОПКА ПРОВЕРКИ ЧСП
+# =====================================================================
+class CheckGroupView(discord.ui.View):
+    def __init__(self, group_id, group_name):
+        super().__init__(timeout=None)
+        self.group_id = group_id
+        self.group_name = group_name
+
+    @discord.ui.button(label="Я вышел / Перепроверить", style=discord.ButtonStyle.success, custom_id="check_leave")
+    async def check_leave(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        roblox_id = db.check_link(interaction.user.id)
+        if not roblox_id:
+            return await interaction.followup.send("❌ Вы не верифицированы.", ephemeral=True)
+        user_groups = await get_user_roblox_groups(roblox_id)
+        if self.group_id in user_groups:
+            await interaction.followup.send(f"❌ **Вы все еще состоите в группе {self.group_name}!**", ephemeral=True)
+        else:
+            db.remove_pending_chsp(interaction.user.id, self.group_id)
+            db.add_strike(interaction.user.id)
+            await interaction.followup.send(f"✅ **Спасибо! Вы вышли из группы {self.group_name}.**", ephemeral=True)
+            button.disabled = True
+            await interaction.message.edit(view=self)
+
+# =====================================================================
+# КОМАНДЫ ЧСП
+# =====================================================================
+@bot.tree.command(name="debug_chsp", description="[АДМИН] Отладка системы ЧСП", guild=KAP_OBJ)
+@app_commands.describe(user="Пользователь для проверки", link="Ссылка на группу для проверки")
+@is_creator()
+async def debug_chsp(interaction: discord.Interaction, user: discord.Member = None, link: str = None):
+    await interaction.response.defer(ephemeral=True)
+    embed = discord.Embed(title="🛠 Отладка ЧСП", color=discord.Color.blue())
+
+    if link:
+        group_id = extract_group_id(link)
+        if not group_id: return await interaction.followup.send("❌ Неверный ID группы.", ephemeral=True)
+        group_name = await get_group_info(group_id)
+        
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        c.execute("SELECT discord_id, roblox_id FROM links")
+        linked_users = c.fetchall()
+        conn.close()
+
+        matches = []
+        for discord_id, roblox_id in linked_users:
+            u_groups = await get_user_roblox_groups(roblox_id)
+            if group_id in u_groups:
+                member = bot.get_guild(MAIN_GUILD_ID).get_member(discord_id)
+                if member: matches.append(f"👤 {member.name} (`{discord_id}`)")
+
+        embed.add_field(name=f"Группа: {group_name}", value="\n".join(matches) if matches else "Нет совпадений", inline=False)
+        
+    elif user:
+        roblox_id = db.check_link(user.id)
+        embed.add_field(name="Пользователь", value=f"{user.mention}\n**Roblox ID:** `{roblox_id or 'Не верифицирован'}`", inline=False)
+        if roblox_id:
+            user_groups = await get_user_roblox_groups(roblox_id)
+            chsp_groups = db.get_all_chsp_groups()
+            matches = [f"🔹 {g_name}" for g_id, g_name, _ in chsp_groups if g_id in user_groups]
+            embed.add_field(name="Найден в ЧСП", value="\n".join(matches) if matches else "Нет", inline=False)
+    else:
+        embed.add_field(name="Инфо", value="Укажите `user` или `link`.", inline=False)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="чсп", description="Добавить группу в Черный список проектов", guild=KAP_OBJ)
+@app_commands.describe(link="Ссылка на группу Roblox или её ID", reason="Причина")
+@is_creator()
+async def add_chsp_kap(interaction: discord.Interaction, link: str, reason: str): await process_add_chsp(interaction, link, reason)
+
+@bot.tree.command(name="чсп", description="Добавить группу в Черный список проектов", guild=MAIN_OBJ)
+@app_commands.describe(link="Ссылка на группу Roblox или её ID", reason="Причина")
+@is_creator()
+async def add_chsp_main(interaction: discord.Interaction, link: str, reason: str): await process_add_chsp(interaction, link, reason)
+
+async def process_add_chsp(interaction: discord.Interaction, link: str, reason: str):
+    group_id = extract_group_id(link)
+    if not group_id: return await interaction.response.send_message("❌ Неверный формат.", ephemeral=True)
+    group_name = await get_group_info(group_id)
+    if group_name == "Неизвестная группа": return await interaction.response.send_message("❌ Группа не найдена.", ephemeral=True)
+
+    await interaction.response.send_message(f"⏳ **Принято.** Анализирую группу и запускаю проверку в фоне.")
+    db.add_chsp_group(group_id, group_name, link, reason, interaction.user.name)
+    
+    forum_channel = bot.get_channel(CHSP_FORUM_ID)
+    forum_embed = discord.Embed(description=f"# 🚫 ЧСП | {group_name}\nПроект внесен в Черный список.\n\n**Ссылка:** [Перейти]({link})\n**Причина:** **{reason}**\n**Модератор:** {interaction.user.mention}", color=discord.Color(16711680))
+    if isinstance(forum_channel, discord.ForumChannel):
+        try: await forum_channel.create_thread(name=f"ЧСП | {group_name}", embed=forum_embed)
+        except: pass
+
+    asyncio.create_task(perform_global_chsp_check())
+
+@bot.tree.command(name="вынести-из-чсп", description="Удалить группу из Черного списка проектов", guild=KAP_OBJ)
+@app_commands.describe(link="Ссылка на группу Roblox или её ID")
+@is_creator()
+async def remove_chsp_kap(interaction: discord.Interaction, link: str): await process_remove_chsp(interaction, link)
+
+@bot.tree.command(name="вынести-из-чсп", description="Удалить группу из Черного списка проектов", guild=MAIN_OBJ)
+@app_commands.describe(link="Ссылка на группу Roblox или её ID")
+@is_creator()
+async def remove_chsp_main(interaction: discord.Interaction, link: str): await process_remove_chsp(interaction, link)
+
+async def process_remove_chsp(interaction: discord.Interaction, link: str):
+    await interaction.response.send_message("⏳ **Принято.** Удаляю группу из ЧСП...")
+    group_id = extract_group_id(link)
+    if not group_id: return await interaction.followup.send("❌ Неверный формат.")
+
+    group_info = db.get_chsp_group_by_id(group_id)
+    if not group_info: return await interaction.followup.send("❌ Этой группы нет в ЧСП.")
+    
+    group_name = group_info[0]
+    db.remove_chsp_group(group_id)
+
+    forum_status = "⚪ Тема не найдена"
+    forum_channel = bot.get_channel(CHSP_FORUM_ID)
+    if isinstance(forum_channel, discord.ForumChannel):
+        target_name = f"ЧСП | {group_name}"
+        found_thread = None
+        async for thread in forum_channel.archived_threads(limit=100):
+            if thread.name == target_name: found_thread = thread; break
+        if not found_thread:
+            for thread in forum_channel.threads:
+                if thread.name == target_name: found_thread = thread; break
+        if found_thread:
+            try: await found_thread.delete(); forum_status = "✅ Тема удалена"
+            except: forum_status = "❌ Ошибка удаления"
+
+    await interaction.followup.send(f"✅ Группа **{group_name}** удалена из ЧСП.\n**Форум:** {forum_status}")
+
+@bot.tree.command(name="перепроверить_всех_игроков", description="[АДМИН] Принудительно проверить всех игроков", guild=KAP_OBJ)
+@is_creator()
+async def force_check_kap(interaction: discord.Interaction):
+    await interaction.response.send_message(f"⏳ **Принято.** Запускаю внеплановую проверку...")
+    result = await perform_global_chsp_check()
+    await interaction.followup.send(embed=discord.Embed(description=f"# 🛠 Ручная проверка\n{result}", color=discord.Color.blue()))
+
+@bot.tree.command(name="перепроверить_всех_игроков", description="[АДМИН] Принудительно проверить всех игроков", guild=MAIN_OBJ)
+@is_creator()
+async def force_check_main(interaction: discord.Interaction):
+    await interaction.response.send_message(f"⏳ **Принято.** Запускаю внеплановую проверку...")
+    result = await perform_global_chsp_check()
+    await interaction.followup.send(embed=discord.Embed(description=f"# 🛠 Ручная проверка\n{result}", color=discord.Color.blue()))
+
+# =====================================================================
+# КОМАНДЫ ОЧС
+# =====================================================================
 @bot.tree.command(name="очс", description="Забанить везде", guild=KAP_OBJ)
 @app_commands.describe(user="Пользователь", reason="Причина", roblox_nick="Ник в РБ", proof="Док-во")
 @is_ochs_staff()
@@ -389,73 +527,56 @@ async def unban_kap(interaction: discord.Interaction, user: discord.User): await
 @is_ochs_staff()
 async def unban_main(interaction: discord.Interaction, user: discord.User): await handle_unban(interaction, user)
 
-async def handle_unban(interaction: discord.Interaction, user: discord.User):
-    await interaction.response.send_message(f"⏳ **Принято.** Разбаниваю {user.mention}...")
-    async def unban_guild(g_id):
-        guild = bot.get_guild(g_id)
-        if not guild: return
-        try:
-            await guild.fetch_ban(user)
-            await asyncio.wait_for(guild.unban(user, reason=f"Вынесен из ОЧС"), timeout=3.0)
-        except: pass
+@bot.tree.command(name="очс-список", description="Показать всех в ЧС", guild=KAP_OBJ)
+@is_ochs_staff()
+async def list_bans_kap(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=False)
+    bans = db.get_all_bans()
+    if not bans: return await interaction.followup.send("📭 В ОЧС никого нет.")
+    for i in range(0, len(bans), 5):
+        desc = "# 📋 ОЧС\n\n"
+        for d_id, d_name, r_nick, reason, mod, date, proof in bans[i:i+5]:
+            desc += f"**👤 {d_name}** (`{d_id}`)\n**Roblox:** {r_nick}\n**Причина:** {reason}\n**Модератор:** {mod}\n**Дата:** {date}\n\n"
+        await interaction.followup.send(embed=discord.Embed(description=desc, color=discord.Color(16711680)))
 
-    await asyncio.gather(*[unban_guild(g_id) for g_id in GUILDS.keys()])
-    
-    try:
-        db.remove_ban(user.id)
-        db.remove_pending_chsp(user.id)
-        db_status = "✅ Удален из базы"
-    except: db_status = "❌ Ошибка БД"
-
-    await interaction.followup.send(embed=discord.Embed(description=f"# ✅ Вынесен из ОЧС {user.mention}\n**База:** {db_status}", color=discord.Color(16711680)))
+@bot.tree.command(name="очс-список", description="Показать всех в ЧС", guild=MAIN_OBJ)
+@is_ochs_staff()
+async def list_bans_main(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=False)
+    bans = db.get_all_bans()
+    if not bans: return await interaction.followup.send("📭 В ОЧС никого нет.")
+    for i in range(0, len(bans), 5):
+        desc = "# 📋 ОЧС\n\n"
+        for d_id, d_name, r_nick, reason, mod, date, proof in bans[i:i+5]:
+            desc += f"**👤 {d_name}** (`{d_id}`)\n**Roblox:** {r_nick}\n**Причина:** {reason}\n**Модератор:** {mod}\n**Дата:** {date}\n\n"
+        await interaction.followup.send(embed=discord.Embed(description=desc, color=discord.Color(16711680)))
 
 # =====================================================================
-# ОСТАЛЬНЫЕ КОМАНДЫ (ЧСП, Времроль, Профиль)
+# ОБЩИЕ КОМАНДЫ (ВРЕМРОЛЬ, СНЯТЬРОЛЬ, ПРОФИЛЬ)
 # =====================================================================
-@bot.tree.command(name="чсп", description="Добавить группу в Черный список проектов", guild=KAP_OBJ)
-@app_commands.describe(link="Ссылка на группу Roblox или её ID", reason="Причина")
-@is_creator()
-async def add_chsp_kap(interaction: discord.Interaction, link: str, reason: str): await process_add_chsp(interaction, link, reason)
+@bot.tree.command(name="времроль", description="Выдать роль на время", guild=KAP_OBJ)
+@app_commands.describe(user="Кому", role="Какую", hours="Часов")
+@is_ochs_staff()
+async def temp_role_kap(interaction: discord.Interaction, user: discord.Member, role: discord.Role, hours: float = 1.0): await handle_temp_role(interaction, user, role, hours)
 
-@bot.tree.command(name="чсп", description="Добавить группу в Черный список проектов", guild=MAIN_OBJ)
-@app_commands.describe(link="Ссылка на группу Roblox или её ID", reason="Причина")
-@is_creator()
-async def add_chsp_main(interaction: discord.Interaction, link: str, reason: str): await process_add_chsp(interaction, link, reason)
+@bot.tree.command(name="времроль", description="Выдать роль на время", guild=MAIN_OBJ)
+@app_commands.describe(user="Кому", role="Какую", hours="Часов")
+@is_ochs_staff()
+async def temp_role_main(interaction: discord.Interaction, user: discord.Member, role: discord.Role, hours: float = 1.0): await handle_temp_role(interaction, user, role, hours)
 
-async def process_add_chsp(interaction: discord.Interaction, link: str, reason: str):
-    group_id = extract_group_id(link)
-    if not group_id: return await interaction.response.send_message("❌ Неверный формат.", ephemeral=True)
+async def handle_temp_role(interaction, user, role, hours):
+    expire = datetime.datetime.now().timestamp() + (hours * 3600)
+    try: await user.add_roles(role)
+    except Exception as e: return await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+    conn = sqlite3.connect('bot_data.db')
+    c = conn.cursor()
+    c.execute("INSERT INTO temp_roles (discord_id, role_id, expire_at) VALUES (?, ?, ?)", (user.id, role.id, expire))
+    conn.commit(); conn.close()
+    await interaction.response.send_message(embed=discord.Embed(description=f"## ✅ Роль выдана на {hours} ч.", color=discord.Color(16711680)), ephemeral=True)
 
-    group_name = await get_group_info(group_id)
-    if group_name == "Неизвестная группа": return await interaction.response.send_message("❌ Группа не найдена.", ephemeral=True)
+@bot.tree.command(name="снятьроль", description="Снять роль", guild=KAP_OBJ)
+@app_commands.describe(user="У кого", role="Какую")
+@is_ochs_staff()
+async def remove_role_kap(interaction: discord.Interaction, user: discord.Member, role: discord.Role): await handle_remove_role(interaction, user, role)
 
-    await interaction.response.send_message(f"⏳ **Принято.** Анализирую группу и запускаю проверку в фоне.")
-    db.add_chsp_group(group_id, group_name, link, reason, interaction.user.name)
-    
-    forum_channel = bot.get_channel(CHSP_FORUM_ID)
-    forum_embed = discord.Embed(description=f"# 🚫 ЧСП | {group_name}\nПроект внесен в Черный список.\n\n**Ссылка:** [Перейти]({link})\n**Причина:** **{reason}**\n**Модератор:** {interaction.user.mention}", color=discord.Color(16711680))
-    if isinstance(forum_channel, discord.ForumChannel):
-        try: await forum_channel.create_thread(name=f"ЧСП | {group_name}", embed=forum_embed)
-        except: pass
-
-    asyncio.create_task(perform_global_chsp_check())
-
-@bot.tree.command(name="профиль", description="Показать ваш Roblox профиль", guild=KAP_OBJ)
-async def profile_kap(interaction: discord.Interaction, user: discord.User = None): await handle_profile(interaction, user)
-
-@bot.tree.command(name="профиль", description="Показать ваш Roblox профиль", guild=MAIN_OBJ)
-async def profile_main(interaction: discord.Interaction, user: discord.User = None): await handle_profile(interaction, user)
-
-async def handle_profile(interaction, user=None):
-    await interaction.response.defer(ephemeral=True)
-    target = user or interaction.user
-    roblox_id = db.check_link(target.id)
-    
-    if not roblox_id: 
-        return await interaction.followup.send(f"❌ {target.mention} еще не прошел верификацию.", ephemeral=True)
-    
-    embed = discord.Embed(description=f"## 👤 Профиль {target.mention}\n**Roblox ID:** `{roblox_id}`\n**Ссылка:** [Профиль](https://www.roblox.com/users/{roblox_id}/profile)", color=discord.Color(16711680))
-    await interaction.followup.send(embed=embed, ephemeral=True)
-
-# Запуск
-bot.run(TOKEN)
+@bot.tree.command(name="снятьроль
