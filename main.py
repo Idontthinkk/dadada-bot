@@ -32,7 +32,11 @@ OCHS_ROLE_1 = 1360357746972819476
 OCHS_ROLE_2 = 1358192820900466932
 
 VERIFY_ROLE_ID = 1569799728210772059 
+UNREGISTERED_ROLE_ID = 1511000147969048699
 ROBLOX_PLACE_LINK = "https://www.roblox.com/games/86704551294131/1979"
+
+# ТА САМАЯ КАРТИНКА ДЛЯ ГЛАВНОГО МЕНЮ
+MAIN_MENU_IMAGE = "https://media.discordapp.net/attachments/1511004157535060058/1565492447872557128/image.png?ex=6af44335&is=6af2f1b5&hm=e4183d233b4e591df5a245feebbb017c5d229167bd9ad79ac337fb613cf06f86&=&format=webp&quality=lossless&width=1593&height=856"
 
 GUILDS = {
     1252308402722574416: "Аэрофлот", 1294972362197958656: "Пожарка",
@@ -79,25 +83,28 @@ class VerifyStartView(discord.ui.View):
             guild = bot.get_guild(MAIN_GUILD_ID)
             member = guild.get_member(interaction.user.id)
             if member:
-                role = guild.get_role(VERIFY_ROLE_ID)
-                if role and role not in member.roles:
-                    await member.add_roles(role)
-                    return await interaction.response.send_message("✅ Вы уже верифицированы! Роль успешно выдана.", ephemeral=True)
-            return await interaction.response.send_message("❌ Вы уже верифицированы!", ephemeral=True)
+                role_verify = guild.get_role(VERIFY_ROLE_ID)
+                role_unreg = guild.get_role(UNREGISTERED_ROLE_ID)
+                if role_verify and role_verify not in member.roles: await member.add_roles(role_verify)
+                if role_unreg and role_unreg in member.roles: await member.remove_roles(role_unreg)
+            return await interaction.response.send_message("✅ Вы уже верифицированы! Роль выдана.", ephemeral=True)
 
         code = f"SSRP-{random.randint(10000, 99999)}"
         await push_code_to_firebase(code, interaction.user.id)
         
+        # Ссылка на плейс в виде кнопки
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(label="Перейти в плейс", style=discord.ButtonStyle.link, url=ROBLOX_PLACE_LINK))
+        
         embed = discord.Embed(
             title="Инструкция по верификации",
             description=f"1. Ваш код: **`{code}`**\n"
-                        f"2. Зайдите в плейс верификации: [ССЫЛКА НА ПЛЕЙС]({ROBLOX_PLACE_LINK})\n"
-                        f"3. Введите код в игре.\n"
-                        f"4. Нажмите кнопку **«Проверить»** ниже.\n\n"
-                        f"*Код действует 10 минут. Верификация безопасна — мы не запрашиваем пароль.*",
+                        f"2. Нажмите кнопку ниже, чтобы зайти в плейс.\n"
+                        f"3. Введите этот код в игре.\n\n"
+                        f"*Код действует 10 минут.*",
             color=discord.Color.blue()
         )
-        await interaction.response.send_message(embed=embed, view=VerifyCheckView(code), ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 # =====================================================================
 # БОТ
@@ -117,7 +124,6 @@ class MyBot(commands.Bot):
 
     async def on_ready(self):
         print(f'[+] Бот запущен как {self.user}')
-
         if VERIFY_CHANNEL_ID != 0:
             channel = self.get_channel(VERIFY_CHANNEL_ID)
             if channel:
@@ -128,11 +134,13 @@ class MyBot(commands.Bot):
                         break
                 
                 if not found_panel:
+                    # ДОБАВЛЯЕМ КАРТИНКУ В ГЛАВНОЕ МЕНЮ
                     embed = discord.Embed(
                         title="Верификация аккаунта",
                         description="Нажмите на кнопку ниже, чтобы привязать аккаунт Roblox к вашему Discord.\n\n*Безопасно: мы не запрашиваем данные вашего аккаунта, вы просто зайдете в плейс.*",
                         color=discord.Color.blue()
                     )
+                    embed.set_image(url=MAIN_MENU_IMAGE) # <--- КАРТИНКА ЗДЕСЬ
                     await channel.send(embed=embed, view=VerifyStartView())
 
         if not firebase_verification_loop.is_running(): firebase_verification_loop.start()
@@ -140,6 +148,17 @@ class MyBot(commands.Bot):
         if not check_deadlines_loop.is_running(): check_deadlines_loop.start()
 
 bot = MyBot()
+
+# =====================================================================
+# АВТО-ВЫДАЧА РОЛИ "НЕЗАРЕГИСТРИРОВАН"
+# =====================================================================
+@bot.event
+async def on_member_join(member):
+    if member.guild.id == MAIN_GUILD_ID:
+        role = member.guild.get_role(UNREGISTERED_ROLE_ID)
+        if role:
+            try: await member.add_roles(role)
+            except: pass
 
 # =====================================================================
 # ПРОВЕРКА ПРАВ
@@ -161,7 +180,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         await interaction.response.send_message(embed=discord.Embed(description="## ❌ У вас нет прав.", color=discord.Color(16711680)), ephemeral=True)
 
 # =====================================================================
-# ВЕРИФИКАЦИЯ (С ИЗМЕНЕНИЕМ НИКА И АВАТАРКОЙ)
+# ВЕРИФИКАЦИЯ (С АВАТАРКОЙ В ЛС)
 # =====================================================================
 async def push_code_to_firebase(code, discord_id):
     url = f"{FIREBASE_URL}/codes/{code}.json"
@@ -183,18 +202,18 @@ async def check_firebase_codes():
                             discord_id = info.get("discord_id")
                             roblox_id = info.get("roblox_id")
                             roblox_name = info.get("roblox_name", "")
-                            avatar_url = info.get("avatar_url", "") # Получаем ссылку на аватарку
+                            avatar_url = info.get("avatar_url", "")
                             
                             db.link_user(discord_id, roblox_id)
                             
                             guild = bot.get_guild(MAIN_GUILD_ID)
                             member = guild.get_member(discord_id)
                             if member:
-                                # 1. Выдаем роль
-                                role = guild.get_role(VERIFY_ROLE_ID)
-                                if role: await member.add_roles(role)
+                                role_verify = guild.get_role(VERIFY_ROLE_ID)
+                                role_unreg = guild.get_role(UNREGISTERED_ROLE_ID)
+                                if role_verify: await member.add_roles(role_verify)
+                                if role_unreg and role_unreg in member.roles: await member.remove_roles(role_unreg)
                                 
-                                # 2. Меняем никнейм
                                 try:
                                     new_nick = f"{member.name} (@{roblox_name})"
                                     if len(new_nick) > 32: new_nick = roblox_name
@@ -202,7 +221,6 @@ async def check_firebase_codes():
                                     await member.edit(nick=new_nick)
                                 except: pass
 
-                                # 3. ЛС
                                 try:
                                     embed = discord.Embed(
                                         title="✅ Успешная верификация!",
@@ -215,7 +233,7 @@ async def check_firebase_codes():
                                     embed.add_field(name="Ваш Discord", value=member.mention, inline=True)
                                     embed.add_field(name="Ваш Roblox", value=f"[Профиль](https://www.roblox.com/users/{roblox_id}/profile)\nID: `{roblox_id}`", inline=True)
                                     
-                                    # Ставим аватарку игрока
+                                    # АВАТАРКА ИГРОКА В ПРАВОМ ВЕРХНЕМ УГЛУ ЛС
                                     if avatar_url:
                                         embed.set_thumbnail(url=avatar_url)
                                     
@@ -228,7 +246,7 @@ async def check_firebase_codes():
 @tasks.loop(seconds=10)
 async def firebase_verification_loop(): await check_firebase_codes()
 
-# ... Остальной код (ЧСП, ОЧС, роли, профиль) остается без изменений ...
+# ... ОСТАЛЬНОЙ КОД (ЧСП, ОЧС, РОЛИ) БЕЗ ИЗМЕНЕНИЙ ...
 def extract_group_id(link: str):
     link = link.strip()
     if link.isdigit(): return int(link)
