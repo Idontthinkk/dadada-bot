@@ -1,7 +1,8 @@
 import sqlite3
 import datetime
 
-DB_NAME = 'bot_data.db'
+import os
+DB_NAME = os.path.join(os.environ.get("DATA_DIR", "/app/data"), "bot_data.db")
 
 def init_db():
     try:
