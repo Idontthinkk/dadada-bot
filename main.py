@@ -66,7 +66,10 @@ class VerifyCheckView(discord.ui.View):
         if roblox_id:
             await interaction.response.send_message(f"✅ **Успех!** Аккаунт привязан (Roblox ID: `{roblox_id}`).\nПриятной игры на проекте!", ephemeral=True)
             button.disabled = True
-            await interaction.message.edit(view=self)
+            try:
+                await interaction.message.edit(view=self)
+            except discord.NotFound:
+                pass # Если сообщение удалено, просто игнорируем
         else:
             await interaction.response.send_message("⏳ Бот еще не получил данные от плейса. Введите код в игре и подождите 10 секунд.", ephemeral=True)
 
@@ -76,14 +79,13 @@ class VerifyStartView(discord.ui.View):
 
     @discord.ui.button(label="Пройти верификацию", style=discord.ButtonStyle.success, custom_id="btn_start_verify")
     async def start_verify(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Проверяем, не привязан ли уже
+        # Если уже привязан - выдаем роль (на случай, если ее нет)
         if db.check_link(interaction.user.id):
-            # Если привязан, но нет роли - выдаем роль
             guild = bot.get_guild(MAIN_GUILD_ID)
             member = guild.get_member(interaction.user.id)
             if member:
                 role = guild.get_role(VERIFY_ROLE_ID)
-                if role:
+                if role and role not in member.roles:
                     await member.add_roles(role)
                     return await interaction.response.send_message("✅ Вы уже верифицированы! Роль успешно выдана.", ephemeral=True)
             return await interaction.response.send_message("❌ Вы уже верифицированы!", ephemeral=True)
