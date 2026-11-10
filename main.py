@@ -299,7 +299,7 @@ async def firebase_verification_loop(): await check_firebase_codes()
 async def update_all_nicks(interaction: discord.Interaction):
     await interaction.response.send_message("⏳ Начинаю обновление ников для всех верифицированных...")
     
-    conn = sqlite3.connect('bot_data.db')
+    conn = sqlite3.connect(db.DB_NAME)
     c = conn.cursor()
     c.execute("SELECT discord_id, roblox_id FROM links")
     linked_users = c.fetchall()
@@ -346,7 +346,7 @@ async def update_all_nicks(interaction: discord.Interaction):
 async def list_registered(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     
-    conn = sqlite3.connect('bot_data.db')
+    conn = sqlite3.connect(db.DB_NAME)
     c = conn.cursor()
     c.execute("SELECT discord_id, roblox_id FROM links")
     linked_users = c.fetchall()
@@ -395,7 +395,7 @@ async def debug_chsp(interaction: discord.Interaction, link: str):
     if group_members is None:
         return await interaction.followup.send(f"❌ Группа **{group_name}** закрыта. Список участников скрыт настройками приватности Roblox.")
         
-    conn = sqlite3.connect('bot_data.db')
+    conn = sqlite3.connect(db.DB_NAME)
     c = conn.cursor()
     c.execute("SELECT discord_id, roblox_id FROM links")
     linked_users = c.fetchall()
@@ -465,7 +465,7 @@ async def perform_global_chsp_check():
     chsp_groups = db.get_all_chsp_groups()
     if not chsp_groups: return "Групп в ЧСП нет."
     
-    conn = sqlite3.connect('bot_data.db')
+    conn = sqlite3.connect(db.DB_NAME)
     c = conn.cursor()
     c.execute("SELECT discord_id, roblox_id FROM links")
     linked_users = c.fetchall()
@@ -734,7 +734,7 @@ async def handle_temp_role(interaction, user, role, hours):
     expire = datetime.datetime.now().timestamp() + (hours * 3600)
     try: await user.add_roles(role)
     except Exception as e: return await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
-    conn = sqlite3.connect('bot_data.db')
+    conn = sqlite3.connect(db.DB_NAME)
     c = conn.cursor()
     c.execute("INSERT INTO temp_roles (discord_id, role_id, expire_at) VALUES (?, ?, ?)", (user.id, role.id, expire))
     conn.commit(); conn.close()
